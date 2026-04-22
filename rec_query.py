@@ -6,13 +6,14 @@ from pyspark.sql import functions as F
 from pyspark.sql.types import StringType
 from pyspark.sql import Window
 import os
+from datetime import date, timedelta
 
 # -----------------------------
 # CONSTANTS / CONFIG
 # -----------------------------
 
 START_DATE = "2026-02-16"
-END_DATE = "2026-04-20"
+END_DATE = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
 
 RAW_MODEL_EVALUATED_TABLE        = "lakehouse_production.ai_products.raw_model_evaluated"
 ENRICHED_PITCH_TABLE             = "ai_products_prod.arcadia.pitch_extraction_enriched"
