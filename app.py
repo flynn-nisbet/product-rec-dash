@@ -5,10 +5,411 @@ import plotly.graph_objects as go
 from datetime import timedelta
 
 st.set_page_config(
-    page_title="Arcadia | Agent Performance",
-    page_icon="⚡",
+    page_title="Product Rank Dash",
+    page_icon="📊",
     layout="wide",
 )
+
+# ── Custom CSS ────────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=DM+Mono:wght@300;400;500&family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;1,300&display=swap');
+
+/* ── Root & Body ── */
+:root {
+    --bg-base:       #0d0f14;
+    --bg-card:       #13161d;
+    --bg-card-alt:   #181c25;
+    --bg-hover:      #1e2330;
+    --border:        #252b3a;
+    --border-bright: #2e3649;
+    --accent:        #3d8ef8;
+    --accent-dim:    #2563c4;
+    --accent-glow:   rgba(61, 142, 248, 0.12);
+    --teal:          #22d3c8;
+    --amber:         #f5a623;
+    --rose:          #f43f5e;
+    --green:         #22c55e;
+    --text-primary:  #e8ecf4;
+    --text-secondary:#8b95aa;
+    --text-muted:    #4d5669;
+    --radius:        8px;
+    --radius-lg:     12px;
+}
+
+/* Global font override */
+html, body, [class*="css"], .stApp, .stMarkdown, p, span, div, label {
+    font-family: 'DM Sans', sans-serif !important;
+    color: var(--text-primary);
+}
+
+/* App background */
+.stApp {
+    background-color: var(--bg-base) !important;
+    background-image:
+        radial-gradient(ellipse 80% 40% at 50% -10%, rgba(61,142,248,0.08) 0%, transparent 60%),
+        radial-gradient(ellipse 40% 30% at 90% 80%, rgba(34,211,200,0.04) 0%, transparent 50%);
+}
+
+/* Main content area */
+.main .block-container {
+    padding: 2rem 2.5rem 4rem !important;
+    max-width: 1600px !important;
+}
+
+/* ── Sidebar ── */
+[data-testid="stSidebar"] {
+    background-color: var(--bg-card) !important;
+    border-right: 1px solid var(--border) !important;
+}
+[data-testid="stSidebar"] .stMarkdown h1,
+[data-testid="stSidebar"] .stMarkdown h2,
+[data-testid="stSidebar"] .stMarkdown h3 {
+    font-family: 'Syne', sans-serif !important;
+    color: var(--text-primary) !important;
+    letter-spacing: 0.04em;
+}
+[data-testid="stSidebar"] .stTitle > * {
+    font-family: 'Syne', sans-serif !important;
+    font-size: 1.1rem !important;
+    font-weight: 700 !important;
+    letter-spacing: 0.08em !important;
+    text-transform: uppercase !important;
+    color: var(--accent) !important;
+}
+
+/* Sidebar labels */
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] .stSelectbox label,
+[data-testid="stSidebar"] .stMultiSelect label,
+[data-testid="stSidebar"] .stDateInput label,
+[data-testid="stSidebar"] .stToggle label {
+    font-size: 0.7rem !important;
+    font-weight: 500 !important;
+    letter-spacing: 0.1em !important;
+    text-transform: uppercase !important;
+    color: var(--text-secondary) !important;
+}
+
+/* ── Headings ── */
+h1, h2, h3, h4 {
+    font-family: 'Syne', sans-serif !important;
+    color: var(--text-primary) !important;
+}
+h1 { font-size: 1.8rem !important; font-weight: 800 !important; letter-spacing: -0.01em !important; }
+h2 { font-size: 1.25rem !important; font-weight: 700 !important; letter-spacing: 0.01em !important; }
+h3 { font-size: 1rem !important; font-weight: 600 !important; }
+
+/* Title */
+[data-testid="stHeading"] h1 {
+    background: linear-gradient(135deg, var(--text-primary) 0%, var(--accent) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    font-size: 2rem !important;
+    font-weight: 800 !important;
+    letter-spacing: -0.02em !important;
+    padding-bottom: 0.1em;
+}
+
+/* Caption / helper text */
+.stCaptionContainer, [data-testid="stCaptionContainer"], small, caption {
+    color: var(--text-secondary) !important;
+    font-size: 0.78rem !important;
+    line-height: 1.5 !important;
+}
+
+/* ── Metric Cards ── */
+[data-testid="stMetric"] {
+    background: var(--bg-card) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--radius-lg) !important;
+    padding: 1rem 1.25rem !important;
+    transition: border-color 0.2s, box-shadow 0.2s !important;
+    position: relative;
+    overflow: hidden;
+}
+[data-testid="stMetric"]::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, var(--accent), var(--teal));
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+[data-testid="stMetric"]:hover {
+    border-color: var(--border-bright) !important;
+    box-shadow: 0 0 0 1px var(--border-bright), 0 4px 20px rgba(0,0,0,0.4) !important;
+}
+[data-testid="stMetric"]:hover::before {
+    opacity: 1;
+}
+[data-testid="stMetricLabel"] {
+    font-size: 0.68rem !important;
+    font-weight: 500 !important;
+    letter-spacing: 0.1em !important;
+    text-transform: uppercase !important;
+    color: var(--text-secondary) !important;
+    font-family: 'DM Sans', sans-serif !important;
+}
+[data-testid="stMetricValue"] {
+    font-family: 'DM Mono', monospace !important;
+    font-size: 1.5rem !important;
+    font-weight: 500 !important;
+    color: var(--text-primary) !important;
+    line-height: 1.2 !important;
+}
+[data-testid="stMetricDelta"] {
+    font-family: 'DM Mono', monospace !important;
+    font-size: 0.75rem !important;
+}
+[data-testid="stMetricDelta"] svg { display: none !important; }
+
+/* ── Tabs ── */
+[data-testid="stTabs"] [role="tablist"] {
+    border-bottom: 1px solid var(--border) !important;
+    gap: 0 !important;
+    background: transparent !important;
+}
+[data-testid="stTabs"] [role="tab"] {
+    font-family: 'Syne', sans-serif !important;
+    font-size: 0.78rem !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.07em !important;
+    text-transform: uppercase !important;
+    color: var(--text-muted) !important;
+    padding: 0.6rem 1.25rem !important;
+    border: none !important;
+    border-bottom: 2px solid transparent !important;
+    background: transparent !important;
+    transition: color 0.15s, border-color 0.15s !important;
+}
+[data-testid="stTabs"] [role="tab"]:hover {
+    color: var(--text-secondary) !important;
+    border-bottom-color: var(--border-bright) !important;
+}
+[data-testid="stTabs"] [role="tab"][aria-selected="true"] {
+    color: var(--accent) !important;
+    border-bottom-color: var(--accent) !important;
+    background: transparent !important;
+}
+
+/* ── Divider ── */
+hr {
+    border: none !important;
+    border-top: 1px solid var(--border) !important;
+    margin: 2rem 0 !important;
+}
+
+/* ── Inputs & Selects ── */
+.stSelectbox > div > div,
+.stMultiSelect > div > div,
+.stTextInput > div > div > input,
+.stDateInput > div > div > input {
+    background-color: var(--bg-card-alt) !important;
+    border: 1px solid var(--border-bright) !important;
+    border-radius: var(--radius) !important;
+    color: var(--text-primary) !important;
+    font-family: 'DM Sans', sans-serif !important;
+    font-size: 0.85rem !important;
+    transition: border-color 0.15s !important;
+}
+.stSelectbox > div > div:focus-within,
+.stMultiSelect > div > div:focus-within,
+.stTextInput > div > div > input:focus,
+.stDateInput > div > div > input:focus {
+    border-color: var(--accent) !important;
+    box-shadow: 0 0 0 2px var(--accent-glow) !important;
+    outline: none !important;
+}
+
+/* Dropdown options */
+[data-baseweb="menu"] {
+    background-color: var(--bg-card-alt) !important;
+    border: 1px solid var(--border-bright) !important;
+    border-radius: var(--radius) !important;
+}
+[data-baseweb="menu"] li {
+    font-family: 'DM Sans', sans-serif !important;
+    font-size: 0.85rem !important;
+    color: var(--text-primary) !important;
+}
+[data-baseweb="menu"] li:hover {
+    background-color: var(--bg-hover) !important;
+}
+
+/* Multiselect tags */
+[data-baseweb="tag"] {
+    background-color: var(--accent-dim) !important;
+    border: none !important;
+    border-radius: 4px !important;
+    font-size: 0.75rem !important;
+}
+
+/* ── Radio Buttons ── */
+.stRadio > div {
+    gap: 0.5rem !important;
+    background: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+    display: inline-flex !important;
+}
+.stRadio label {
+    font-size: 0.75rem !important;
+    font-weight: 500 !important;
+    letter-spacing: 0.05em !important;
+    text-transform: uppercase !important;
+    padding: 0.3rem 0.85rem !important;
+    border-radius: 6px !important;
+    cursor: pointer !important;
+    color: var(--text-secondary) !important;
+    background: transparent !important;
+    transition: color 0.15s !important;
+}
+.stRadio [data-checked="true"] + label,
+.stRadio input:checked + div {
+    background: transparent !important;
+    color: var(--accent) !important;
+    font-weight: 600 !important;
+}
+
+/* ── Toggle ── */
+.stToggle [data-checked] {
+    background-color: var(--accent) !important;
+}
+
+/* ── Dataframe / Table ── */
+[data-testid="stDataFrame"],
+.stDataFrame {
+    border: 1px solid var(--border) !important;
+    border-radius: var(--radius-lg) !important;
+    overflow: hidden !important;
+}
+[data-testid="stDataFrame"] thead th {
+    background: var(--bg-card-alt) !important;
+    font-family: 'DM Sans', sans-serif !important;
+    font-size: 0.68rem !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.1em !important;
+    text-transform: uppercase !important;
+    color: var(--text-secondary) !important;
+    border-bottom: 1px solid var(--border-bright) !important;
+    padding: 0.6rem 0.8rem !important;
+}
+[data-testid="stDataFrame"] tbody td {
+    font-family: 'DM Mono', monospace !important;
+    font-size: 0.82rem !important;
+    color: var(--text-primary) !important;
+    border-bottom: 1px solid var(--border) !important;
+    padding: 0.5rem 0.8rem !important;
+    background: var(--bg-card) !important;
+}
+[data-testid="stDataFrame"] tbody tr:hover td {
+    background: var(--bg-hover) !important;
+}
+
+/* ── Buttons ── */
+.stButton > button {
+    background: var(--accent) !important;
+    color: white !important;
+    border: none !important;
+    border-radius: var(--radius) !important;
+    font-family: 'DM Sans', sans-serif !important;
+    font-size: 0.8rem !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.05em !important;
+    padding: 0.5rem 1.25rem !important;
+    transition: all 0.15s !important;
+}
+.stButton > button:hover {
+    background: var(--accent-dim) !important;
+    box-shadow: 0 4px 12px rgba(61,142,248,0.3) !important;
+    transform: translateY(-1px) !important;
+}
+
+/* ── Subheader styling ── */
+[data-testid="stHeading"] h2,
+.stMarkdown h2 {
+    color: var(--text-primary) !important;
+    font-size: 1.1rem !important;
+    font-weight: 700 !important;
+    letter-spacing: 0.02em !important;
+    padding-top: 0.25rem !important;
+    padding-bottom: 0.5rem !important;
+    border-bottom: 1px solid var(--border) !important;
+    margin-bottom: 1rem !important;
+}
+
+/* ── Info / Warning boxes ── */
+[data-testid="stInfo"] {
+    background: rgba(61,142,248,0.08) !important;
+    border: 1px solid rgba(61,142,248,0.25) !important;
+    border-radius: var(--radius) !important;
+    color: var(--accent) !important;
+    font-size: 0.85rem !important;
+}
+[data-testid="stWarning"] {
+    background: rgba(245,166,35,0.08) !important;
+    border: 1px solid rgba(245,166,35,0.25) !important;
+    border-radius: var(--radius) !important;
+    color: var(--amber) !important;
+}
+
+/* Caption row under title */
+[data-testid="stCaptionContainer"] p {
+    color: var(--text-muted) !important;
+    font-size: 0.78rem !important;
+    font-family: 'DM Mono', monospace !important;
+    letter-spacing: 0.05em !important;
+}
+
+/* ── Section label (bold markdown) ── */
+.stMarkdown strong {
+    color: var(--text-primary) !important;
+    font-weight: 600 !important;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg-base); }
+::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+</style>
+""", unsafe_allow_html=True)
+
+# ── Plotly dark theme ──────────────────────────────────────────────────────────
+import plotly.io as pio
+
+PLOT_LAYOUT = dict(
+    paper_bgcolor="rgba(0,0,0,0)",
+    plot_bgcolor="rgba(0,0,0,0)",
+    font=dict(family="DM Sans, sans-serif", color="#8b95aa", size=12),
+    xaxis=dict(
+        gridcolor="#1e2330",
+        linecolor="#252b3a",
+        tickcolor="#252b3a",
+        zerolinecolor="#252b3a",
+    ),
+    yaxis=dict(
+        gridcolor="#1e2330",
+        linecolor="#252b3a",
+        tickcolor="#252b3a",
+        zerolinecolor="#252b3a",
+    ),
+    legend=dict(
+        bgcolor="rgba(19,22,29,0.8)",
+        bordercolor="#252b3a",
+        borderwidth=1,
+        font=dict(size=11, color="#8b95aa"),
+    ),
+    colorway=["#3d8ef8", "#22d3c8", "#f5a623", "#f43f5e", "#a78bfa", "#22c55e"],
+)
+
+def apply_dark_theme(fig, **extra):
+    layout = {**PLOT_LAYOUT, **extra}
+    fig.update_layout(**layout)
+    return fig
 
 # ── Load data ─────────────────────────────────────────────────────────────────
 DATA_FILE = "call_level_pitches_and_recs.csv"
@@ -38,7 +439,6 @@ df_raw = load_data()
 with st.sidebar:
     st.title("Filters")
 
-    # 1. Date range — top of sidebar, defaults to last 7 days
     if "call_date" in df_raw.columns and df_raw["call_date"].notna().any():
         min_d = df_raw["call_date"].min().date()
         max_d = df_raw["call_date"].max().date()
@@ -53,7 +453,6 @@ with st.sidebar:
     else:
         date_range = None
 
-    # 2. Remaining filters — no default selection (empty = show all)
     centers_opts  = sorted(df_raw["center_location"].dropna().unique().tolist()) if "center_location" in df_raw.columns else []
     mkt_opts      = sorted(df_raw["marketing_bucket"].dropna().unique().tolist()) if "marketing_bucket" in df_raw.columns else []
     serp_opts     = sorted(df_raw["site_serp"].dropna().unique().tolist()) if "site_serp" in df_raw.columns else []
@@ -70,10 +469,9 @@ with st.sidebar:
     rec_type_opts = sorted(df_raw["top_recommended_plan_type"].dropna().unique().tolist()) if "top_recommended_plan_type" in df_raw.columns else []
     sel_rec_type  = st.multiselect("Rec Product Type", options=rec_type_opts, default=[], key="filter_rec_type")
 
-    # 3. Happy path — on by default
     happy_only = st.toggle("Happy Path Calls Only", value=True, key="filter_happy_path")
 
-# ── Apply filters (two versions: with and without date filter) ────────────────
+# ── Apply filters ─────────────────────────────────────────────────────────────
 def apply_non_date_filters(base):
     d = base.copy()
     if happy_only and "happy_path" in d.columns:
@@ -92,10 +490,8 @@ def apply_non_date_filters(base):
         d = d[d["top_recommended_plan_type"].isin(sel_rec_type)]
     return d
 
-# df_nodatefilter: all filters applied EXCEPT date — used for trend cards & KPI deltas
 df_nodatefilter = apply_non_date_filters(df_raw)
 
-# df: full filter set including date
 df = df_nodatefilter.copy()
 if date_range and len(date_range) == 2 and "call_date" in df.columns:
     df = df[(df["call_date"].dt.date >= date_range[0]) & (df["call_date"].dt.date <= date_range[1])]
@@ -106,16 +502,13 @@ PERIOD_CODE    = {"Daily": "D", "Weekly": "W", "Monthly": "M"}
 PERIOD_FMT     = {"Daily": "%b %d", "Weekly": "%b %d", "Monthly": "%b %Y"}
 
 def period_start_dates(date_series: pd.Series, period: str) -> pd.Series:
-    """Return the period start as a proper datetime — sortable and Plotly-friendly."""
     code = PERIOD_CODE[period]
     return date_series.dt.to_period(code).apply(lambda p: p.start_time)
 
 def period_labels(date_series: pd.Series, period: str) -> pd.Series:
-    """Return sortable ISO date strings (YYYY-MM-DD) for groupby keys."""
     return period_start_dates(date_series, period).dt.strftime("%Y-%m-%d")
 
 def period_display(label_series: pd.Series, period: str) -> pd.Series:
-    """Convert YYYY-MM-DD groupby keys to human-readable axis labels."""
     fmt = PERIOD_FMT[period]
     return pd.to_datetime(label_series).dt.strftime(fmt)
 
@@ -126,7 +519,6 @@ def fmt_week(s):
         return str(s)
 
 def week_mix(source_df, plan_type):
-    """Return (this_week_pct, prev_week_pct) for a given plan type using the two most recent full weeks."""
     if "call_date" not in source_df.columns or "top_recommended_plan_type" not in source_df.columns:
         return None, None
     tmp = source_df.dropna(subset=["call_date", "top_recommended_plan_type"]).copy()
@@ -143,7 +535,6 @@ def week_mix(source_df, plan_type):
     return mix_for(this_w), mix_for(prev_w)
 
 def kpi_delta(source_df, metric_fn, label=""):
-    """Compute metric for last 7 days vs prior 7 days from source_df (date-unfiltered)."""
     if "call_date" not in source_df.columns:
         return None, None
     max_date = source_df["call_date"].max()
@@ -165,12 +556,11 @@ if "call_date" in df.columns and df["call_date"].notna().any():
     mx = df["call_date"].max().strftime("%b %d, %Y")
     date_str = f"{mn} – {mx}"
 
-st.title("⚡ Arcadia Performance")
+st.title("📊 Product Rank Dash")
 st.caption(f"{date_str}  ·  {len(df):,} calls in view")
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_model, tab_agent = st.tabs(["Model Outputs", "Agent Behavior & Performance"])
-
+tab_model, tab_agent, tab_agent_level = st.tabs(["Model Outputs", "Agent Behavior & Performance", "Agent Level"])
 
 # ════════════════════════════════════════════════════════════════════════════════
 # TAB 1 — MODEL OUTPUTS
@@ -180,7 +570,6 @@ with tab_model:
     # ── Section 1: Recommendation Mix ────────────────────────────────────────
     st.subheader("Recommendation Mix Over Time")
 
-    # Trend cards — last full week vs prior week, static (df_nodatefilter)
     if "top_recommended_plan_type" in df_nodatefilter.columns:
         plan_types_all = sorted(df_nodatefilter["top_recommended_plan_type"].dropna().unique().tolist())
         trend_cols = st.columns(len(plan_types_all))
@@ -200,7 +589,7 @@ with tab_model:
     granularity = st.radio(
         "Granularity",
         PERIOD_OPTIONS,
-        index=0,
+        index=0,  # Daily default
         horizontal=True,
         key="rec_mix_granularity",
     )
@@ -222,22 +611,22 @@ with tab_model:
 
         plan_types = sorted(rec_ts["top_recommended_plan_type"].unique().tolist())
 
-        # Plain (non-stacked) line chart
         fig_mix = go.Figure()
         for pt in plan_types:
             sub = rec_ts[rec_ts["top_recommended_plan_type"] == pt]
             fig_mix.add_trace(go.Scatter(
                 x=sub["period_display"], y=sub["pct"],
                 name=pt, mode="lines+markers",
+                line=dict(width=2),
+                marker=dict(size=5),
             ))
-        fig_mix.update_layout(
+        apply_dark_theme(fig_mix,
             yaxis_ticksuffix="%", height=340,
             margin=dict(l=40, r=20, t=10, b=40),
             legend=dict(orientation="h", y=-0.2),
         )
         st.plotly_chart(fig_mix, use_container_width=True)
 
-        # Table: plan types as rows, periods as columns (use display labels as column headers)
         st.caption("Recommendation mix — share of calls (%) per plan type")
         rec_ts_tbl = rec_ts.copy()
         rec_pivot = (
@@ -276,8 +665,6 @@ with tab_model:
         COL_MAP = {"Fixed": "raw_prob_fixed", "Tiered": "raw_prob_tiered", "Bundled": "raw_prob_bundled"}
         GAP_LABELS = ["Q1\nLowest", "Q2", "Q3", "Q4", "Q5\nHighest"]
 
-        # ── Row A: headline probability summary cards ─────────────────────────
-        # Show avg raw prob for each product type, plus avg confidence gap
         ra_cols = st.columns(4)
         for i, (pt, col) in enumerate([("Fixed", "raw_prob_fixed"), ("Tiered", "raw_prob_tiered"),
                                         ("Bundled", "raw_prob_bundled")]):
@@ -289,14 +676,10 @@ with tab_model:
         ra_cols[3].metric("Avg Confidence Gap", f"{avg_gap:.2f} pts",
                           help="Mean expected-points gap between #1 and #2 recommendations — higher = model more certain")
 
-        # ── Row B: raw probability distributions + confidence gap histogram ───
         st.markdown("**Raw Probability Distributions**")
         st.caption(
             "Left: violin plots of each product's raw conversion probability across all calls, regardless "
-            "of what was recommended. This shows the model's baseline view of each product type. "
-            "Right: histogram of the expected-points gap between the #1 and #2 recommendations. "
-            "A right-skewed distribution means the model usually has a clear preferred product; "
-            "a spike near zero means many calls are close-call toss-ups."
+            "of what was recommended. Right: histogram of the expected-points gap between #1 and #2 recommendations."
         )
         rb1, rb2 = st.columns(2)
 
@@ -311,7 +694,7 @@ with tab_model:
                         meanline_visible=True,
                         points=False,
                     ))
-            fig_violin.update_layout(
+            apply_dark_theme(fig_violin,
                 yaxis_title="Raw Conversion Probability",
                 yaxis_tickformat=".0%",
                 height=320,
@@ -322,17 +705,18 @@ with tab_model:
 
         with rb2:
             gap_vals = df["expected_points_gap_1_2"].dropna()
-            # Confidence tiers: Low <25th pct, Medium 25-75th, High >75th
             p25, p75 = gap_vals.quantile(0.25), gap_vals.quantile(0.75)
             pct_low  = (gap_vals < p25).mean() * 100
             pct_high = (gap_vals > p75).mean() * 100
             fig_hist = go.Figure()
-            fig_hist.add_trace(go.Histogram(x=gap_vals, nbinsx=40))
-            fig_hist.add_vline(x=float(p25), line_dash="dash", line_color="gray",
-                               annotation_text=f"25th pct ({p25:.2f})", annotation_position="top right")
-            fig_hist.add_vline(x=float(p75), line_dash="dash", line_color="gray",
-                               annotation_text=f"75th pct ({p75:.2f})", annotation_position="top left")
-            fig_hist.update_layout(
+            fig_hist.add_trace(go.Histogram(x=gap_vals, nbinsx=40, marker_color="#3d8ef8", opacity=0.8))
+            fig_hist.add_vline(x=float(p25), line_dash="dash", line_color="#4d5669",
+                               annotation_text=f"25th ({p25:.2f})", annotation_position="top right",
+                               annotation_font_color="#8b95aa")
+            fig_hist.add_vline(x=float(p75), line_dash="dash", line_color="#4d5669",
+                               annotation_text=f"75th ({p75:.2f})", annotation_position="top left",
+                               annotation_font_color="#8b95aa")
+            apply_dark_theme(fig_hist,
                 xaxis_title="Expected Points Gap (#1 vs #2)",
                 yaxis_title="Calls",
                 height=320,
@@ -343,13 +727,11 @@ with tab_model:
             st.caption(f"**{pct_low:.0f}%** of calls are low-confidence (gap < {p25:.2f} pts) · "
                        f"**{pct_high:.0f}%** are high-confidence (gap > {p75:.2f} pts)")
 
-        # ── Row D: confidence gap quintile × adherence & outcomes ─────────────
         st.markdown("**Does Model Confidence Predict Outcome? — By Confidence Gap Quintile**")
         st.caption(
             "Calls bucketed by the model's confidence gap (expected-points difference between #1 and #2). "
             "Left: do agents adhere more when the model is confident? "
-            "Right: does following the recommendation pay off more when the model is confident? "
-            "A well-calibrated model should show widening benefit-of-adherence as confidence increases."
+            "Right: does following the recommendation pay off more when the model is confident?"
         )
 
         df_gap = df.dropna(subset=["expected_points_gap_1_2", "adhered_call"]).copy()
@@ -376,10 +758,13 @@ with tab_model:
                 y=adh_by_gap["adherence"] * 100,
                 text=(adh_by_gap["adherence"] * 100).round(1).astype(str) + "%",
                 textposition="outside",
+                textfont=dict(color="#8b95aa", size=11),
+                marker_color="#3d8ef8",
+                marker_line_width=0,
                 customdata=adh_by_gap[["calls", "gap_med"]],
                 hovertemplate="Calls: %{customdata[0]:,}<br>Median gap: %{customdata[1]:.2f}<extra></extra>",
             ))
-            fig_adh_gap.update_layout(
+            apply_dark_theme(fig_adh_gap,
                 xaxis_title="Confidence Gap Quintile",
                 yaxis_title="Adherence Rate",
                 yaxis_ticksuffix="%",
@@ -400,11 +785,6 @@ with tab_model:
 
             df_gap2 = df_gap[df_gap["classification_bucket"].isin(["Adherence", "Slide"])].copy()
             if len(df_gap2) > 0:
-                def outcome_agg(x, metric):
-                    if metric == "GCV / Call":
-                        return x.mean()
-                    return (x > 0).mean() * 100
-
                 gap_out = (
                     df_gap2.groupby(["gap_bucket", "classification_bucket"], observed=True)
                     .agg(val=(col_map2[metric_choice],
@@ -421,9 +801,10 @@ with tab_model:
                         y=sub["val"],
                         name=label,
                         mode="lines+markers",
-                        line=dict(dash=dash),
+                        line=dict(dash=dash, width=2),
+                        marker=dict(size=5),
                     ))
-                fig_out.update_layout(
+                apply_dark_theme(fig_out,
                     xaxis_title="Confidence Gap Quintile",
                     yaxis_tickprefix="$" if is_dollar else "",
                     yaxis_ticksuffix="" if is_dollar else "%",
@@ -464,7 +845,6 @@ with tab_model:
         top_gcv_fp   = safe_mean(top_df.loc[top_df["gcv_on_first_pitch"] > 0, "gcv_on_first_pitch"])
         slide_gcv_fp = safe_mean(slide_df.loc[slide_df["gcv_on_first_pitch"] > 0, "gcv_on_first_pitch"])
 
-        # Headline metrics
         ca1, ca2, ca3, ca4 = st.columns(4)
         ca1.metric("Top Rec — 1st Pitch CR",  f"{top_fp_cr:.1f}%",
                    delta=f"{top_fp_cr - slide_fp_cr:+.1f}pp vs Slide")
@@ -473,7 +853,6 @@ with tab_model:
                    delta=f"${top_gcv - slide_gcv:+,.0f} vs Slide")
         ca4.metric("Slide — GCV / Call",      f"${slide_gcv:,.0f}")
 
-        # Side-by-side bar charts: CR and GCV
         cb1, cb2 = st.columns(2)
 
         with cb1:
@@ -483,15 +862,21 @@ with tab_model:
                 name="Top Rec", x=["1st Pitch CR", "Overall CR"],
                 y=[top_fp_cr, top_cr],
                 text=[f"{top_fp_cr:.1f}%", f"{top_cr:.1f}%"], textposition="outside",
+                textfont=dict(color="#8b95aa", size=11),
+                marker_color="#3d8ef8", marker_line_width=0,
             ))
             fig_cr.add_trace(go.Bar(
                 name="Slide", x=["1st Pitch CR", "Overall CR"],
                 y=[slide_fp_cr, slide_cr],
                 text=[f"{slide_fp_cr:.1f}%", f"{slide_cr:.1f}%"], textposition="outside",
+                textfont=dict(color="#8b95aa", size=11),
+                marker_color="#22d3c8", marker_line_width=0,
             ))
-            fig_cr.update_layout(barmode="group", yaxis_ticksuffix="%", height=300,
-                                 margin=dict(l=40, r=20, t=10, b=40),
-                                 legend=dict(orientation="h", y=-0.25))
+            apply_dark_theme(fig_cr,
+                barmode="group", yaxis_ticksuffix="%", height=300,
+                margin=dict(l=40, r=20, t=10, b=40),
+                legend=dict(orientation="h", y=-0.25),
+            )
             st.plotly_chart(fig_cr, use_container_width=True)
 
         with cb2:
@@ -501,18 +886,23 @@ with tab_model:
                 name="Top Rec", x=["GCV / Call", "GCV / 1st Pitch"],
                 y=[top_gcv, top_gcv_fp],
                 text=[f"${top_gcv:,.0f}", f"${top_gcv_fp:,.0f}"], textposition="outside",
+                textfont=dict(color="#8b95aa", size=11),
+                marker_color="#3d8ef8", marker_line_width=0,
             ))
             fig_gcv.add_trace(go.Bar(
                 name="Slide", x=["GCV / Call", "GCV / 1st Pitch"],
                 y=[slide_gcv, slide_gcv_fp],
                 text=[f"${slide_gcv:,.0f}", f"${slide_gcv_fp:,.0f}"], textposition="outside",
+                textfont=dict(color="#8b95aa", size=11),
+                marker_color="#22d3c8", marker_line_width=0,
             ))
-            fig_gcv.update_layout(barmode="group", yaxis_tickprefix="$", height=300,
-                                  margin=dict(l=40, r=20, t=10, b=40),
-                                  legend=dict(orientation="h", y=-0.25))
+            apply_dark_theme(fig_gcv,
+                barmode="group", yaxis_tickprefix="$", height=300,
+                margin=dict(l=40, r=20, t=10, b=40),
+                legend=dict(orientation="h", y=-0.25),
+            )
             st.plotly_chart(fig_gcv, use_container_width=True)
 
-        # Breakdown by plan type
         st.markdown("**Conversion by Plan Type — Top Rec vs. Slide**")
         if "top_recommended_plan_type" in df.columns:
             plan_cmp = (
@@ -550,12 +940,11 @@ with tab_agent:
     agent_granularity = st.radio(
         "Granularity",
         PERIOD_OPTIONS,
-        index=1,
+        index=0,  # Daily default
         horizontal=True,
         key="agent_granularity",
     )
 
-    # ── First pitch tier trend cards (date-filter-immune, uses df_nodatefilter) ──
     if "first_pitch_type" in df_nodatefilter.columns and "call_date" in df_nodatefilter.columns:
         tmp_fp = df_nodatefilter.dropna(subset=["call_date", "first_pitch_type"]).copy()
         tmp_fp["week"] = tmp_fp["call_date"].dt.to_period("W")
@@ -604,12 +993,17 @@ with tab_agent:
             ts[["adherence", "slide", "all_plans"]] *= 100
 
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=ts["period_display"], y=ts["adherence"], name="Adherence", mode="lines+markers"))
-            fig.add_trace(go.Scatter(x=ts["period_display"], y=ts["slide"], name="Slide", mode="lines+markers", line=dict(dash="dot")))
-            fig.add_trace(go.Scatter(x=ts["period_display"], y=ts["all_plans"], name="All Plans", mode="lines+markers", line=dict(dash="dash")))
-            fig.update_layout(yaxis_ticksuffix="%", height=320,
-                              margin=dict(l=40, r=20, t=20, b=40),
-                              legend=dict(orientation="h", y=-0.2))
+            fig.add_trace(go.Scatter(x=ts["period_display"], y=ts["adherence"], name="Adherence",
+                                     mode="lines+markers", line=dict(width=2), marker=dict(size=5)))
+            fig.add_trace(go.Scatter(x=ts["period_display"], y=ts["slide"], name="Slide",
+                                     mode="lines+markers", line=dict(dash="dot", width=2), marker=dict(size=5)))
+            fig.add_trace(go.Scatter(x=ts["period_display"], y=ts["all_plans"], name="All Plans",
+                                     mode="lines+markers", line=dict(dash="dash", width=2), marker=dict(size=5)))
+            apply_dark_theme(fig,
+                yaxis_ticksuffix="%", height=320,
+                margin=dict(l=40, r=20, t=20, b=40),
+                legend=dict(orientation="h", y=-0.2),
+            )
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("call_date or adhered_call column missing.")
@@ -634,10 +1028,13 @@ with tab_agent:
                 sub = pitch_ts[pitch_ts["first_pitch_type"] == pt]
                 if sub.empty:
                     continue
-                fig2.add_trace(go.Scatter(x=sub["period_display"], y=sub["pct"], name=pt, mode="lines+markers"))
-            fig2.update_layout(yaxis_ticksuffix="%", height=320,
-                               margin=dict(l=40, r=20, t=20, b=40),
-                               legend=dict(orientation="h", y=-0.2))
+                fig2.add_trace(go.Scatter(x=sub["period_display"], y=sub["pct"], name=pt,
+                                          mode="lines+markers", line=dict(width=2), marker=dict(size=5)))
+            apply_dark_theme(fig2,
+                yaxis_ticksuffix="%", height=320,
+                margin=dict(l=40, r=20, t=20, b=40),
+                legend=dict(orientation="h", y=-0.2),
+            )
             st.plotly_chart(fig2, use_container_width=True)
         else:
             st.info("call_date or first_pitch_type column missing.")
@@ -665,11 +1062,9 @@ with tab_agent:
     if "call_date" in df.columns:
         pot_df = df.dropna(subset=["call_date"]).copy()
 
-        # Apply first pitch type filter
         if pot_fp_filter != "All" and "first_pitch_type" in pot_df.columns:
             pot_df = pot_df[pot_df["first_pitch_type"] == pot_fp_filter]
 
-        # Group by granularity period
         pot_df["period"] = period_labels(pot_df["call_date"], agent_granularity)
 
         def pot_agg(grp):
@@ -704,8 +1099,12 @@ with tab_agent:
                 y=pot_ts["value"],
                 mode="lines+markers",
                 name=pot_metric,
+                line=dict(color="#3d8ef8", width=2),
+                marker=dict(size=5, color="#3d8ef8"),
+                fill="tozeroy",
+                fillcolor="rgba(61,142,248,0.06)",
             ))
-            fig_pot.update_layout(
+            apply_dark_theme(fig_pot,
                 yaxis_tickprefix="$" if is_dollar else "",
                 yaxis_ticksuffix="" if is_dollar else "%",
                 height=320,
@@ -735,17 +1134,15 @@ with tab_agent:
 
     if needed_cols.issubset(df_raw.columns):
 
-        # Default to last two full ISO weeks
         raw_min = df_raw["call_date"].min().date()
         raw_max = df_raw["call_date"].max().date()
 
         import datetime as _dt
-        _last_mon  = raw_max - timedelta(days=raw_max.weekday())          # Mon of current/last week
-        _post_def_start = _last_mon - timedelta(days=7)                   # Mon of most recent full week
-        _post_def_end   = _post_def_start + timedelta(days=6)             # Sun of most recent full week
-        _pre_def_start  = _post_def_start - timedelta(days=7)             # Mon of prior week
-        _pre_def_end    = _pre_def_start + timedelta(days=6)              # Sun of prior week
-        # Clamp to available data
+        _last_mon  = raw_max - timedelta(days=raw_max.weekday())
+        _post_def_start = _last_mon - timedelta(days=7)
+        _post_def_end   = _post_def_start + timedelta(days=6)
+        _pre_def_start  = _post_def_start - timedelta(days=7)
+        _pre_def_end    = _pre_def_start + timedelta(days=6)
         _post_def_start = max(_post_def_start, raw_min)
         _post_def_end   = min(_post_def_end,   raw_max)
         _pre_def_start  = max(_pre_def_start,  raw_min)
@@ -771,7 +1168,6 @@ with tab_agent:
 
         if len(pre_range) == 2 and len(post_range) == 2:
 
-            # Apply all non-date sidebar filters to raw data, then split by period
             def slice_period(base, start, end):
                 return base[
                     (base["call_date"].dt.date >= start) &
@@ -781,7 +1177,6 @@ with tab_agent:
             pre_df  = slice_period(df_nodatefilter, pre_range[0],  pre_range[1])
             post_df = slice_period(df_nodatefilter, post_range[0], post_range[1])
 
-            # ── Headline metric cards ─────────────────────────────────────────
             def overall_metric(source, metric):
                 if len(source) == 0:
                     return float("nan")
@@ -817,11 +1212,9 @@ with tab_agent:
                                   help=f"Post period value · delta vs pre period")
 
             def compute_metrics(source):
-                """Aggregate per rec_type × behavior bucket."""
                 if len(source) == 0:
                     return pd.DataFrame()
 
-                # Total calls per rec type — for mix denominator
                 rec_totals = (
                     source.dropna(subset=["top_recommended_plan_type"])
                     .groupby("top_recommended_plan_type")
@@ -893,23 +1286,23 @@ with tab_agent:
                     pct_chg = (post - pre) / abs(pre) * 100
                     return f"{pct_chg:+.0f}%"
 
-                def delta_color(pre, post, higher_is_better):
-                    if pd.isna(pre) or pd.isna(post) or pre == 0:
+                def color_delta_cell(val):
+                    if val == "—" or val == "":
                         return ""
-                    pct_chg = (post - pre) / abs(pre) * 100
-                    if abs(pct_chg) < 3:
-                        return "background-color: #fff9c4"   # yellow — negligible
-                    if (pct_chg > 0) == higher_is_better:
-                        return "background-color: #c8e6c9"   # green
-                    return "background-color: #ffcdd2"        # red
+                    try:
+                        num = float(val.replace("%", "").replace("+", ""))
+                    except Exception:
+                        return ""
+                    if abs(num) < 3:
+                        return "background-color: #2a2a1a; color: #c8a000"
+                    if num > 0:
+                        return "background-color: #0f2a1a; color: #22c55e"
+                    return "background-color: #2a1018; color: #f43f5e"
 
-                # Build display rows
                 BEH_ORDER = ["Adhered", "Slide", "All Plans"]
                 rec_types = sorted(merged["rec_type"].unique())
 
                 display_rows = []
-                style_map    = {}  # (row_idx, col_name) -> css
-
                 row_idx = 0
                 for rt in rec_types:
                     for beh in BEH_ORDER:
@@ -926,45 +1319,14 @@ with tab_agent:
                             post_v = r[f"{col}_post"]
                             row[f"{label} {pre_label}"]  = fmt_val(pre_v,  fmt)
                             row[f"{label} {post_label}"] = fmt_val(post_v, fmt)
-                            delta_str = fmt_delta(pre_v, post_v, fmt)
-                            row[f"{label} Delta"] = delta_str
-                            style_map[(row_idx, f"{label} Delta")] = delta_color(pre_v, post_v, hib)
+                            row[f"{label} Delta"] = fmt_delta(pre_v, post_v, fmt)
                         display_rows.append(row)
                         row_idx += 1
 
                 display_df = pd.DataFrame(display_rows)
-
-                # Apply cell styling via pandas Styler
-                def apply_styles(styler):
-                    for (ri, col), css in style_map.items():
-                        if css and col in styler.data.columns:
-                            styler.data  # ensure exists
-                            styler = styler.set_properties(
-                                subset=pd.IndexSlice[ri, col], **{"background-color": css.split(": ")[1]}
-                            )
-                    return styler
-
-                # Build styler manually with applymap-style logic
                 delta_cols = [f"{label} Delta" for _, label, _, _ in METRICS]
-
-                def color_delta_cell(val):
-                    if val == "—" or val == "":
-                        return ""
-                    try:
-                        num = float(val.replace("%", "").replace("+", ""))
-                    except Exception:
-                        return ""
-                    if abs(num) < 3:
-                        return "background-color: #fff9c4"
-                    if num > 0:
-                        return "background-color: #c8e6c9"
-                    return "background-color: #ffcdd2"
-
-                # We need to know which delta cols are "higher is bad" (none in this table)
-                # All metrics here: higher mix/CR/GCV = good, so positive delta = green
                 styler = display_df.style.map(color_delta_cell, subset=delta_cols)
 
-                # Column order: Rec Type, Behavior, then metric groups
                 col_order = ["Rec Type", "Behavior"]
                 for _, label, _, _ in METRICS:
                     col_order += [f"{label} {pre_label}", f"{label} {post_label}", f"{label} Delta"]
@@ -974,7 +1336,6 @@ with tab_agent:
 
                 st.dataframe(styler, use_container_width=True, hide_index=True, column_order=col_order)
 
-                # ── Overall (no rec type split) comparison table ──────────────
                 st.subheader("Overall Comparison")
 
                 def compute_overall_metrics(source):
@@ -1041,7 +1402,7 @@ with tab_agent:
 
     st.divider()
 
-    # ── Confusion Matrix: First Pitch vs. Recommended Plan Type ───────────────
+    # ── Confusion Matrix ──────────────────────────────────────────────────────
     st.subheader("Confusion Matrix — First Pitch vs. Recommended Plan Type")
     st.caption(
         "Rows: plan type of the rec slot the agent pitched first. "
@@ -1058,44 +1419,26 @@ with tab_agent:
 
     if cm_needed.issubset(df.columns):
         import ast as _ast
+        import re as _re
 
         def norm_plan_type(x):
             if not isinstance(x, str):
                 return None
-            x = x.strip().lower()
-            if "fixed"  in x: return "Fixed"
-            if "tier"   in x: return "Tiered"
-            if "bund"   in x: return "Bundled"
+            x = x.strip()
+            if _re.search(r'\bFixed\b',   x, _re.IGNORECASE): return "Fixed"
+            if _re.search(r'\bTiered\b',  x, _re.IGNORECASE): return "Tiered"
+            if _re.search(r'\bBundled\b', x, _re.IGNORECASE): return "Bundled"
             return None
 
         def safe_parse_list(v):
-            # Robustly parse rec type lists however Spark/CSV serialised them.
-            # Handles: actual list, ['a','b'], [a, b], "a,b", None/nan strings
             if isinstance(v, list):
                 return v
-            if not isinstance(v, str):
+            if not isinstance(v, str) or v.strip() in ("", "None", "nan", "null", "[]"):
                 return []
-            s = v.strip()
-            if s in ("", "None", "nan", "null", "[]"):
-                return []
-            if s.startswith("[") and s.endswith("]"):
-                inner = s[1:-1].strip()
-                if not inner:
-                    return []
-                try:
-                    result = _ast.literal_eval(s)
-                    if isinstance(result, list):
-                        return [str(x).strip() for x in result]
-                except Exception:
-                    pass
-                # Unquoted Spark output e.g. [Fixed, Tiered, Bundled]
-                parts = inner.split(",")
-                return [p.strip().strip("'").strip('"') for p in parts if p.strip()]
-            parts = s.split(",")
-            return [p.strip().strip("'").strip('"') for p in parts if p.strip()]
+            import re
+            return re.findall(r'\b(Fixed|Tiered|Bundled)\b', v)
 
         cm_df = df.dropna(subset=["first_pitch_type", "top_recommended_plan_type"]).copy()
-        # Also exclude rows where recommended_plan_types_in_order is a null-ish string
         cm_df = cm_df[~cm_df["recommended_plan_types_in_order"].astype(str).isin(
             ["", "None", "nan", "null", "[]"]
         )]
@@ -1121,43 +1464,14 @@ with tab_agent:
             return pd.Series({"row_label": row_label, "col_label": col_label})
 
         cm_df[["row_label", "col_label"]] = cm_df.apply(get_row_col, axis=1)
-
-        # ── Debug expander — helps diagnose misclassified rows ────────────────
-        with st.expander("🔍 Debug: row classification sample (remove when confirmed)"):
-            st.markdown("**Sample of Diamond calls where top rec = Tiered**")
-            tiered_diamond = cm_df[
-                (cm_df["first_pitch_type"] == "Diamond") &
-                (cm_df["top_recommended_plan_type"].str.lower().str.contains("tier", na=False))
-            ][["first_pitch_type", "first_pitch_plan_category", "top_recommended_plan_type",
-               "recommended_plan_types_in_order", "_rec_types", "row_label", "col_label"]].head(20)
-            st.dataframe(tiered_diamond, use_container_width=True)
-
-            st.markdown("**Sample of Gold calls where top rec = Tiered**")
-            tiered_gold = cm_df[
-                (cm_df["first_pitch_type"] == "Gold") &
-                (cm_df["top_recommended_plan_type"].str.lower().str.contains("tier", na=False))
-            ][["first_pitch_type", "first_pitch_plan_category", "top_recommended_plan_type",
-               "recommended_plan_types_in_order", "_rec_types", "row_label", "col_label"]].head(20)
-            st.dataframe(tiered_gold, use_container_width=True)
-
-            st.markdown("**row_label value counts**")
-            st.dataframe(cm_df["row_label"].value_counts().reset_index(), use_container_width=True)
-
-            st.markdown("**col_label value counts**")
-            st.dataframe(cm_df["col_label"].value_counts().reset_index(), use_container_width=True)
-
-            st.markdown("**Sample raw recommended_plan_types_in_order strings (first 10)**")
-            st.write(cm_df["recommended_plan_types_in_order"].dropna().head(10).tolist())
-
         cm_df = cm_df[cm_df["row_label"].notna() & cm_df["col_label"].notna()]
-
         total_calls = len(cm_df)
+
         ROW_LABELS = ["Fixed", "Tiered", "Bundled", "Other"]
         COL_LABELS = ["Fixed", "Tiered", "Bundled"]
 
-        # Build cell data
-        z_counts   = []   # heatmap color values (call count)
-        text_cells = []   # annotation strings
+        z_counts   = []
+        text_cells = []
 
         for row_label in ROW_LABELS:
             z_row, t_row = [], []
@@ -1186,16 +1500,31 @@ with tab_agent:
             y=ROW_LABELS,
             text=text_cells,
             texttemplate="%{text}",
-            colorscale="Blues",
-            colorbar=dict(title="Call count"),
+            colorscale=[[0, "#0d1520"], [0.5, "#1a3a6e"], [1.0, "#3d8ef8"]],
+            colorbar=dict(
+                title="Calls",
+                title_font=dict(color="#8b95aa", size=11),
+                tickfont=dict(color="#8b95aa", size=10),
+                bgcolor="rgba(0,0,0,0)",
+                bordercolor="#252b3a",
+            ),
             hoverongaps=False,
         ))
-        fig_cm.update_layout(
-            xaxis=dict(title="Recommended plan type (top_recommended_plan_type)", side="bottom"),
-            yaxis=dict(title="First pitch (canonical rec match → plan type)", autorange="reversed"),
+        apply_dark_theme(fig_cm,
+            xaxis=dict(
+                title="Recommended plan type",
+                side="bottom",
+                gridcolor="rgba(0,0,0,0)",
+                linecolor="#252b3a",
+            ),
+            yaxis=dict(
+                title="First pitch (canonical rec match → plan type)",
+                autorange="reversed",
+                gridcolor="rgba(0,0,0,0)",
+                linecolor="#252b3a",
+            ),
             height=460,
             margin=dict(l=100, r=40, t=20, b=80),
-            font=dict(size=12),
         )
         st.plotly_chart(fig_cm, use_container_width=True)
         st.caption(f"Total calls in view: {total_calls:,}  ·  "
@@ -1205,3 +1534,127 @@ with tab_agent:
     else:
         missing = cm_needed - set(df.columns)
         st.info(f"Columns missing for confusion matrix: {', '.join(sorted(missing))}")
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 3 — AGENT LEVEL
+# ════════════════════════════════════════════════════════════════════════════════
+with tab_agent_level:
+    st.subheader("Agent-Level Performance")
+    st.caption(
+        "One row per agent. First-pitch tier rates show share of that agent's calls "
+        "where each tier was pitched first. Conversion and GCV metrics are per-call "
+        "and per-first-pitch. All sidebar filters apply."
+    )
+
+    agent_needed = {
+        "agent_name", "first_pitch_type",
+        "gcv_on_first_pitch", "order_count", "gcv", "points",
+    }
+
+    if agent_needed.issubset(df.columns):
+
+        al_c1, al_c2, al_c3 = st.columns([2, 2, 1])
+        with al_c1:
+            agent_search = st.text_input("Search Agent Name", key="agent_search", placeholder="Type to filter…")
+        with al_c2:
+            sort_col = st.selectbox(
+                "Sort by",
+                ["Calls", "Diamond %", "Gold %", "Silver %", "Bronze %",
+                 "1st Pitch CR", "Overall CR", "GCV / Call", "GCV / 1st Pitch", "Points / Call"],
+                key="agent_sort_col",
+            )
+        with al_c3:
+            sort_asc = st.radio("Order", ["Desc", "Asc"], horizontal=True, key="agent_sort_order") == "Asc"
+
+        ag = df.copy()
+        if agent_search:
+            ag = ag[ag["agent_name"].astype(str).str.contains(agent_search, case=False, na=False)]
+
+        def agent_agg(g):
+            n = len(g)
+            fp_counts = g["first_pitch_type"].value_counts()
+            def fp_pct(tier):
+                return fp_counts.get(tier, 0) / n * 100 if n else float("nan")
+
+            fp_cr    = (g["gcv_on_first_pitch"] > 0).mean() * 100
+            ov_cr    = (g["order_count"] > 0).mean() * 100
+            gcv_call = g["gcv"].mean()
+            gcv_fp_s = g.loc[g["gcv_on_first_pitch"] > 0, "gcv_on_first_pitch"]
+            gcv_fp   = gcv_fp_s.mean() if len(gcv_fp_s) else float("nan")
+            pts_call = g["points"].mean() if "points" in g.columns else float("nan")
+
+            return pd.Series({
+                "Calls":           n,
+                "Diamond %":       fp_pct("Diamond"),
+                "Gold %":          fp_pct("Gold"),
+                "Silver %":        fp_pct("Silver"),
+                "Bronze %":        fp_pct("Bronze"),
+                "1st Pitch CR":    fp_cr,
+                "Overall CR":      ov_cr,
+                "GCV / Call":      gcv_call,
+                "GCV / 1st Pitch": gcv_fp,
+                "Points / Call":   pts_call,
+            })
+
+        agent_df = (
+            ag.groupby("agent_name")
+            .apply(agent_agg)
+            .reset_index()
+            .rename(columns={"agent_name": "Agent"})
+        )
+
+        if sort_col in agent_df.columns:
+            agent_df = agent_df.sort_values(sort_col, ascending=sort_asc)
+
+        sc1, sc2, sc3, sc4 = st.columns(4)
+        sc1.metric("Agents", f"{len(agent_df):,}")
+        sc2.metric("Avg Diamond %", f"{agent_df['Diamond %'].mean():.1f}%")
+        sc3.metric("Avg 1st Pitch CR", f"{agent_df['1st Pitch CR'].mean():.1f}%")
+        sc4.metric("Avg GCV / Call", f"${agent_df['GCV / Call'].mean():,.0f}")
+
+        dc1, dc2 = st.columns(2)
+
+        with dc1:
+            st.markdown("**Diamond % Distribution**")
+            fig_d = go.Figure(go.Histogram(
+                x=agent_df["Diamond %"], nbinsx=20,
+                marker_color="#3d8ef8", opacity=0.8,
+                marker_line_color="#252b3a", marker_line_width=1,
+            ))
+            apply_dark_theme(fig_d,
+                xaxis_title="Diamond First-Pitch Rate (%)",
+                yaxis_title="Agents",
+                height=240,
+                margin=dict(l=40, r=20, t=10, b=40),
+            )
+            st.plotly_chart(fig_d, use_container_width=True)
+
+        with dc2:
+            st.markdown("**GCV / Call Distribution**")
+            fig_g = go.Figure(go.Histogram(
+                x=agent_df["GCV / Call"].dropna(), nbinsx=20,
+                marker_color="#22d3c8", opacity=0.8,
+                marker_line_color="#252b3a", marker_line_width=1,
+            ))
+            apply_dark_theme(fig_g,
+                xaxis_title="GCV / Call ($)",
+                yaxis_title="Agents",
+                height=240,
+                margin=dict(l=40, r=20, t=10, b=40),
+            )
+            st.plotly_chart(fig_g, use_container_width=True)
+
+        fmt_df = agent_df.copy()
+        for col in ["Diamond %", "Gold %", "Silver %", "Bronze %", "1st Pitch CR", "Overall CR"]:
+            fmt_df[col] = fmt_df[col].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "—")
+        for col in ["GCV / Call", "GCV / 1st Pitch"]:
+            fmt_df[col] = fmt_df[col].apply(lambda x: f"${x:,.0f}" if pd.notna(x) else "—")
+        fmt_df["Points / Call"] = fmt_df["Points / Call"].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "—")
+        fmt_df["Calls"] = fmt_df["Calls"].apply(lambda x: f"{x:,}")
+
+        st.dataframe(fmt_df, use_container_width=True, hide_index=True)
+
+    else:
+        missing = agent_needed - set(df.columns)
+        st.info(f"Columns missing for agent table: {', '.join(sorted(missing))}")
