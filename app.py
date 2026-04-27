@@ -459,12 +459,24 @@ with st.sidebar:
     mov_opts      = sorted(df_raw["mover_switcher"].dropna().unique().tolist()) if "mover_switcher" in df_raw.columns else []
     quartile_opts = sorted(df_raw["performance_quartile"].dropna().unique().tolist()) if "performance_quartile" in df_raw.columns else []
 
+    # ── NEW: Agent multi-select ───────────────────────────────────────────────
+    agent_opts = sorted(df_raw["agent_name"].dropna().unique().tolist()) if "agent_name" in df_raw.columns else []
+
     center_defaults = [c for c in ["Durban", "Jamaica"] if c in centers_opts]
     sel_center   = st.multiselect("Center",           options=centers_opts,  default=center_defaults, key="filter_center")
     sel_mkt      = st.multiselect("Marketing Bucket", options=mkt_opts,      default=[], key="filter_mkt")
     sel_serp     = st.multiselect("Site / SERP",      options=serp_opts,     default=[], key="filter_serp")
     sel_mov      = st.multiselect("Mover / Switcher", options=mov_opts,      default=[], key="filter_mov")
     sel_quartile = st.multiselect("Agent Quartile",   options=quartile_opts, default=[], key="filter_quartile")
+
+    # Agent filter with search — st.multiselect has built-in search when there are many options
+    sel_agent    = st.multiselect(
+        "Agent",
+        options=agent_opts,
+        default=[],
+        key="filter_agent",
+        placeholder="Search agents…",
+    )
 
     rec_type_opts = sorted(df_raw["top_recommended_plan_type"].dropna().unique().tolist()) if "top_recommended_plan_type" in df_raw.columns else []
     sel_rec_type  = st.multiselect("Rec Product Type", options=rec_type_opts, default=[], key="filter_rec_type")
@@ -486,6 +498,8 @@ def apply_non_date_filters(base):
         d = d[d["mover_switcher"].isin(sel_mov)]
     if sel_quartile and "performance_quartile" in d.columns:
         d = d[d["performance_quartile"].isin(sel_quartile)]
+    if sel_agent and "agent_name" in d.columns:
+        d = d[d["agent_name"].isin(sel_agent)]
     if sel_rec_type and "top_recommended_plan_type" in d.columns:
         d = d[d["top_recommended_plan_type"].isin(sel_rec_type)]
     return d
@@ -639,6 +653,119 @@ with tab_model:
         st.dataframe(rec_pivot, use_container_width=True, hide_index=True)
     else:
         st.info("call_date or top_recommended_plan_type column missing.")
+
+    # ── NEW: Product-Level Recommendation Mix ─────────────────────────────────
+    st.markdown("---")
+    st.markdown("**Product-Level Recommendation Mix**")
+    st.caption(
+        "Share of calls (%) where a specific product appears in the Diamond or Gold rec slot over time. "
+        "Use the dropdowns to filter by pitch slot and specific products."
+    )
+
+    # Determine which columns hold the ranked product recommendations
+    # Expected: recommended_in_order (list/string of product names in rank order)
+    # and first_pitch_type to identify Diamond vs Gold slot
+    prod_col_candidates = ["recommended_in_order", "pitches_canonical_in_order", "pitches_in_order"]
+    prod_col = next((c for c in prod_col_candidates if c in df.columns), None)
+
+    if prod_col is not None and "call_date" in df.columns:
+        import re as _re_prod
+
+        def extract_product_at_slot(series_str, slot_idx):
+            """Parse a list-like string and return the item at slot_idx (0-based)."""
+            if not isinstance(series_str, str) or series_str.strip() in ("", "None", "nan", "null", "[]"):
+                return None
+            items = _re_prod.findall(r"'([^']+)'|\"([^\"]+)\"|([^\[\],\s][^\[\],]*[^\[\],\s]|[^\[\],\s]+)", series_str)
+            flat = [next(g for g in grp if g) for grp in items]
+            flat = [f.strip() for f in flat if f.strip() and f.strip() not in ("None", "nan", "null")]
+            return flat[slot_idx] if slot_idx < len(flat) else None
+
+        # Build a dataframe with diamond product and gold product per call
+        prod_df = df.dropna(subset=["call_date"]).copy()
+        prod_df["diamond_product"] = prod_df[prod_col].apply(lambda x: extract_product_at_slot(x, 0))
+        prod_df["gold_product"]    = prod_df[prod_col].apply(lambda x: extract_product_at_slot(x, 1))
+
+        all_diamond_products = sorted(prod_df["diamond_product"].dropna().unique().tolist())
+        all_gold_products    = sorted(prod_df["gold_product"].dropna().unique().tolist())
+
+        pml_c1, pml_c2 = st.columns(2)
+        with pml_c1:
+            pm_slot = st.selectbox(
+                "Pitch Slot",
+                options=["Diamond", "Gold"],
+                key="pm_slot",
+            )
+        with pml_c2:
+            slot_product_opts = all_diamond_products if pm_slot == "Diamond" else all_gold_products
+            pm_products = st.multiselect(
+                "Products (leave blank for all)",
+                options=slot_product_opts,
+                default=[],
+                key="pm_products",
+            )
+
+        slot_product_col = "diamond_product" if pm_slot == "Diamond" else "gold_product"
+        pm_df = prod_df.dropna(subset=[slot_product_col]).copy()
+
+        if pm_products:
+            pm_df = pm_df[pm_df[slot_product_col].isin(pm_products)]
+            products_to_plot = pm_products
+        else:
+            # Show top 10 by frequency to avoid chart overload
+            top_products = (
+                pm_df[slot_product_col].value_counts().head(10).index.tolist()
+            )
+            pm_df = pm_df[pm_df[slot_product_col].isin(top_products)]
+            products_to_plot = top_products
+
+        if len(pm_df) > 0:
+            pm_df["period"] = period_labels(pm_df["call_date"], granularity)
+            # Total calls per period (from full df, not pm_df, for proper denominator)
+            period_totals = (
+                prod_df.assign(period=period_labels(prod_df["call_date"], granularity))
+                .groupby("period")
+                .size()
+                .rename("total")
+                .reset_index()
+            )
+
+            pm_ts = (
+                pm_df.groupby(["period", slot_product_col])
+                .size()
+                .reset_index(name="n")
+                .sort_values("period")
+            )
+            pm_ts = pm_ts.merge(period_totals, on="period", how="left")
+            pm_ts["pct"] = pm_ts["n"] / pm_ts["total"] * 100
+            pm_ts["period_display"] = period_display(pm_ts["period"], granularity)
+
+            fig_pm = go.Figure()
+            for prod in products_to_plot:
+                sub = pm_ts[pm_ts[slot_product_col] == prod]
+                if sub.empty:
+                    continue
+                fig_pm.add_trace(go.Scatter(
+                    x=sub["period_display"],
+                    y=sub["pct"],
+                    name=prod,
+                    mode="lines+markers",
+                    line=dict(width=2),
+                    marker=dict(size=5),
+                ))
+            apply_dark_theme(fig_pm,
+                yaxis_ticksuffix="%",
+                height=340,
+                margin=dict(l=40, r=20, t=10, b=40),
+                legend=dict(orientation="h", y=-0.25),
+                yaxis_title=f"% of calls with product in {pm_slot} slot",
+            )
+            st.plotly_chart(fig_pm, use_container_width=True)
+            if not pm_products:
+                st.caption(f"Showing top 10 products by volume in the {pm_slot} slot. Use the filter above to select specific products.")
+        else:
+            st.info("No data available for the selected slot / product combination.")
+    else:
+        st.info("Product recommendation column not found. Expected one of: recommended_in_order, pitches_canonical_in_order, pitches_in_order.")
 
     st.divider()
 
@@ -842,8 +969,9 @@ with tab_model:
         slide_cr     = (slide_df["order_count"] > 0).mean() * 100
         top_gcv      = safe_mean(top_df["gcv"])
         slide_gcv    = safe_mean(slide_df["gcv"])
-        top_gcv_fp   = safe_mean(top_df.loc[top_df["gcv_on_first_pitch"] > 0, "gcv_on_first_pitch"])
-        slide_gcv_fp = safe_mean(slide_df.loc[slide_df["gcv_on_first_pitch"] > 0, "gcv_on_first_pitch"])
+        # FIX: GCV / 1st Pitch = total first-pitch GCV / all calls (expected value, not conditional mean)
+        top_gcv_fp   = safe_mean(top_df["gcv_on_first_pitch"])
+        slide_gcv_fp = safe_mean(slide_df["gcv_on_first_pitch"])
 
         ca1, ca2, ca3, ca4 = st.columns(4)
         ca1.metric("Top Rec — 1st Pitch CR",  f"{top_fp_cr:.1f}%",
@@ -881,6 +1009,7 @@ with tab_model:
 
         with cb2:
             st.markdown("**GCV**")
+            st.caption("GCV / 1st Pitch = total first-pitch GCV ÷ all calls in group (expected value per call)")
             fig_gcv = go.Figure()
             fig_gcv.add_trace(go.Bar(
                 name="Top Rec", x=["GCV / Call", "GCV / 1st Pitch"],
@@ -913,12 +1042,15 @@ with tab_model:
                     fp_cr=("gcv_on_first_pitch", lambda x: (x > 0).mean()),
                     overall_cr=("order_count", lambda x: (x > 0).mean()),
                     gcv_call=("gcv", "mean"),
+                    # FIX: GCV / 1st Pitch EV = mean over all calls (zeros included)
+                    gcv_fp_ev=("gcv_on_first_pitch", "mean"),
                 )
                 .reset_index()
             )
             plan_cmp["fp_cr"]      = (plan_cmp["fp_cr"] * 100).round(1).astype(str) + "%"
             plan_cmp["overall_cr"] = (plan_cmp["overall_cr"] * 100).round(1).astype(str) + "%"
             plan_cmp["gcv_call"]   = plan_cmp["gcv_call"].round(0).apply(lambda x: f"${x:,.0f}")
+            plan_cmp["gcv_fp_ev"]  = plan_cmp["gcv_fp_ev"].round(0).apply(lambda x: f"${x:,.0f}")
             plan_cmp = plan_cmp.rename(columns={
                 "top_recommended_plan_type": "Plan Type",
                 "classification_bucket": "Pitched",
@@ -926,6 +1058,7 @@ with tab_model:
                 "fp_cr": "1st Pitch CR",
                 "overall_cr": "Overall CR",
                 "gcv_call": "GCV / Call",
+                "gcv_fp_ev": "GCV / 1st Pitch",
             })
             st.dataframe(plan_cmp, use_container_width=True, hide_index=True)
     else:
@@ -1073,8 +1206,8 @@ with tab_agent:
             elif pot_metric == "Overall CR":
                 return (grp["order_count"] > 0).mean() * 100
             elif pot_metric == "GCV / 1st Pitch":
-                s = grp.loc[grp["gcv_on_first_pitch"] > 0, "gcv_on_first_pitch"]
-                return s.mean() if len(s) else float("nan")
+                # FIX: expected value — mean over ALL calls, zeros included
+                return grp["gcv_on_first_pitch"].mean()
             elif pot_metric == "GCV / Call":
                 return grp["gcv"].mean()
             elif pot_metric == "RPO":
@@ -1185,17 +1318,17 @@ with tab_agent:
                 if metric == "ov_cr":
                     return (source["order_count"] > 0).mean() * 100
                 if metric == "gcv_fp":
-                    s = source.loc[source["gcv_on_first_pitch"] > 0, "gcv_on_first_pitch"]
-                    return s.mean() if len(s) else float("nan")
+                    # FIX: expected value over all calls
+                    return source["gcv_on_first_pitch"].mean()
                 if metric == "gcv_call":
                     return source["gcv"].mean()
                 return float("nan")
 
             hm_specs = [
-                ("fp_cr",    "1st Pitch CR",    "pct"),
-                ("ov_cr",    "Overall CR",      "pct"),
-                ("gcv_fp",   "GCV / 1st Pitch", "dollar"),
-                ("gcv_call", "GCV / Call",      "dollar"),
+                ("fp_cr",    "1st Pitch CR",         "pct"),
+                ("ov_cr",    "Overall CR",            "pct"),
+                ("gcv_fp",   "GCV / 1st Pitch",  "dollar"),
+                ("gcv_call", "GCV / Call",            "dollar"),
             ]
 
             hm_cols = st.columns(4)
@@ -1239,7 +1372,8 @@ with tab_agent:
                         mix      = n_sub / rec_totals.get(rtype, n_rec) * 100 if rec_totals.get(rtype, 0) > 0 else float("nan")
                         fp_cr    = (sub["gcv_on_first_pitch"] > 0).mean() * 100 if n_sub > 0 else float("nan")
                         ov_cr    = (sub["order_count"] > 0).mean() * 100 if n_sub > 0 else float("nan")
-                        gcv_fp   = sub.loc[sub["gcv_on_first_pitch"] > 0, "gcv_on_first_pitch"].mean() if n_sub > 0 else float("nan")
+                        # FIX: GCV / 1st Pitch EV = mean over all calls in subset (zeros included)
+                        gcv_fp   = sub["gcv_on_first_pitch"].mean() if n_sub > 0 else float("nan")
                         gcv_call = sub["gcv"].mean() if n_sub > 0 else float("nan")
                         rows.append({
                             "rec_type": rtype,
@@ -1267,11 +1401,11 @@ with tab_agent:
                 post_label = f"{post_range[0].strftime('%-m/%-d')}-{post_range[1].strftime('%-m/%-d')}"
 
                 METRICS = [
-                    ("mix",      "Mix",                "pct",    False),
-                    ("fp_cr",    "First Pitch CR",     "pct",    False),
-                    ("ov_cr",    "Overall CR",         "pct",    False),
+                    ("mix",      "Mix",                    "pct",    False),
+                    ("fp_cr",    "First Pitch CR",          "pct",    False),
+                    ("ov_cr",    "Overall CR",              "pct",    False),
                     ("gcv_fp",   "GCV / First Pitch",  "dollar", True),
-                    ("gcv_call", "GCV / Call",         "dollar", True),
+                    ("gcv_call", "GCV / Call",              "dollar", True),
                 ]
 
                 def fmt_val(v, fmt):
@@ -1353,7 +1487,8 @@ with tab_agent:
                         mix      = n_sub / total_calls * 100 if total_calls > 0 else float("nan")
                         fp_cr    = (sub["gcv_on_first_pitch"] > 0).mean() * 100 if n_sub > 0 else float("nan")
                         ov_cr    = (sub["order_count"] > 0).mean() * 100 if n_sub > 0 else float("nan")
-                        gcv_fp   = sub.loc[sub["gcv_on_first_pitch"] > 0, "gcv_on_first_pitch"].mean() if n_sub > 0 else float("nan")
+                        # FIX: GCV / 1st Pitch EV = mean over all calls (zeros included)
+                        gcv_fp   = sub["gcv_on_first_pitch"].mean() if n_sub > 0 else float("nan")
                         gcv_call = sub["gcv"].mean() if n_sub > 0 else float("nan")
                         rows.append({
                             "behavior": behavior,
@@ -1544,7 +1679,8 @@ with tab_agent_level:
     st.caption(
         "One row per agent. First-pitch tier rates show share of that agent's calls "
         "where each tier was pitched first. Conversion and GCV metrics are per-call "
-        "and per-first-pitch. All sidebar filters apply."
+        "and per-first-pitch. GCV / 1st Pitch is an expected value (all calls, not just converting). "
+        "All sidebar filters apply."
     )
 
     agent_needed = {
@@ -1580,21 +1716,21 @@ with tab_agent_level:
             fp_cr    = (g["gcv_on_first_pitch"] > 0).mean() * 100
             ov_cr    = (g["order_count"] > 0).mean() * 100
             gcv_call = g["gcv"].mean()
-            gcv_fp_s = g.loc[g["gcv_on_first_pitch"] > 0, "gcv_on_first_pitch"]
-            gcv_fp   = gcv_fp_s.mean() if len(gcv_fp_s) else float("nan")
+            # FIX: GCV / 1st Pitch EV = mean over ALL calls (zeros included)
+            gcv_fp   = g["gcv_on_first_pitch"].mean()
             pts_call = g["points"].mean() if "points" in g.columns else float("nan")
 
             return pd.Series({
-                "Calls":           n,
-                "Diamond %":       fp_pct("Diamond"),
-                "Gold %":          fp_pct("Gold"),
-                "Silver %":        fp_pct("Silver"),
-                "Bronze %":        fp_pct("Bronze"),
-                "1st Pitch CR":    fp_cr,
-                "Overall CR":      ov_cr,
-                "GCV / Call":      gcv_call,
+                "Calls":               n,
+                "Diamond %":           fp_pct("Diamond"),
+                "Gold %":              fp_pct("Gold"),
+                "Silver %":            fp_pct("Silver"),
+                "Bronze %":            fp_pct("Bronze"),
+                "1st Pitch CR":        fp_cr,
+                "Overall CR":          ov_cr,
+                "GCV / Call":          gcv_call,
                 "GCV / 1st Pitch": gcv_fp,
-                "Points / Call":   pts_call,
+                "Points / Call":       pts_call,
             })
 
         agent_df = (
