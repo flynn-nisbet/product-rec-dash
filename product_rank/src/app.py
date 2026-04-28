@@ -412,27 +412,11 @@ def apply_dark_theme(fig, **extra):
     return fig
 
 # ── Load data ─────────────────────────────────────────────────────────────────
-DATA_FILE = os.path.join(os.path.dirname(__file__), "call_level_pitches_and_recs.csv")
+from rec_query import get_data
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400)  # refreshes every 24 hours
 def load_data():
-    df = pd.read_csv(DATA_FILE)
-    if "call_date" in df.columns:
-        df["call_date"] = pd.to_datetime(df["call_date"], errors="coerce")
-    for col in ["pitches_in_order", "recommended_in_order", "pitch_types_in_order",
-                "pitches_canonical_in_order", "recommended_plan_types_in_order"]:
-        if col in df.columns:
-            df[col] = df[col].astype(str)
-    for col in ["order_count", "gcv", "gcv_on_first_pitch", "points",
-                "adhered_call", "slide_call", "all_plans_call"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
-    return df
-
-if not os.path.exists(DATA_FILE):
-    st.warning("No data file found. The daily query may not have run yet.")
-    st.stop()
-
+    return get_data()
 df_raw = load_data()
 
 # ── Sidebar filters ───────────────────────────────────────────────────────────
