@@ -9,6 +9,10 @@ import os
 from datetime import date, timedelta
 
 def get_data():
+
+    from pyspark.sql import SparkSession
+    spark = SparkSession.getActiveSession()
+    
     # -----------------------------
     # CONSTANTS / CONFIG
     # -----------------------------
