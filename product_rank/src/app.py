@@ -412,7 +412,7 @@ def apply_dark_theme(fig, **extra):
     return fig
 
 # ── Load data ─────────────────────────────────────────────────────────────────
-DATA_FILE = "call_level_pitches_and_recs.csv"
+DATA_FILE = os.path.join(os.path.dirname(__file__), "call_level_pitches_and_recs.csv")
 
 @st.cache_data(ttl=3600)
 def load_data():
