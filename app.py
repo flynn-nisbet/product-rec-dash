@@ -412,20 +412,24 @@ def apply_dark_theme(fig, **extra):
     return fig
 
 # ── Load data ─────────────────────────────────────────────────────────────────
-from rec_query import get_data
+import pandas as pd
+import os
 
-@st.cache_data(ttl=86400)  # refreshes every 24 hours
+@st.cache_data(ttl="24h")
 def load_data():
-    return get_data()
+    data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "call_level_data.csv")
+    return pd.read_csv(data_path)
+
 df_raw = load_data()
+df_raw["call_date"] = pd.to_datetime(df_raw["call_date"])
 
 # ── Sidebar filters ───────────────────────────────────────────────────────────
 with st.sidebar:
     st.title("Filters")
 
     if "call_date" in df_raw.columns and df_raw["call_date"].notna().any():
-        min_d = df_raw["call_date"].min().date()
-        max_d = df_raw["call_date"].max().date()
+        min_d = pd.to_datetime(df_raw["call_date"].min()).date()
+        max_d = pd.to_datetime(df_raw["call_date"].max()).date()
         default_start = max(min_d, max_d - timedelta(days=6))
         date_range = st.date_input(
             "Date Range",
@@ -1251,8 +1255,8 @@ with tab_agent:
 
     if needed_cols.issubset(df_raw.columns):
 
-        raw_min = df_raw["call_date"].min().date()
-        raw_max = df_raw["call_date"].max().date()
+        raw_min = pd.to_datetime(df_raw["call_date"].min()).date()
+        raw_max = pd.to_datetime(df_raw["call_date"].max()).date()
 
         import datetime as _dt
         _last_mon  = raw_max - timedelta(days=raw_max.weekday())

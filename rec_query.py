@@ -1,18 +1,18 @@
 import json
-import re
 from typing import Dict, Any, List, Optional
 import pandas as pd
 from pyspark.sql import functions as F
-from pyspark.sql.types import StringType
 from pyspark.sql import Window
 import os
 from datetime import date, timedelta
+from databricks.connect import DatabricksSession
 
 def get_data():
 
-    from pyspark.sql import SparkSession
-    spark = SparkSession.getActiveSession()
-    
+    spark = DatabricksSession.builder \
+        .host("redventures-rv-energy-prod-production-9xwiei.cloud.databricks.com") \
+        .serverless(True) \
+        .getOrCreate()
     # -----------------------------
     # CONSTANTS / CONFIG
     # -----------------------------
@@ -42,18 +42,6 @@ def get_data():
     TARGET_CENTER_LOCATIONS = ["Durban", "Jamaica", "Charlotte"]
 
     SILVER_POINTS_THRESHOLD = 25.0
-
-    # -----------------------------
-    # Canonical helper
-    # -----------------------------
-
-    def canonical_key_py(name: str) -> str:
-        if not name:
-            return None
-        name = str(name).strip().lower()
-        return re.sub(r"[\s\-]+", "", name)
-
-    canonical_key_udf = F.udf(canonical_key_py, StringType())
 
     # -----------------------------
     # JSON parser helpers (rank model)
@@ -533,7 +521,10 @@ def get_data():
         .select("plan_id", "plan_name", "supplier_name")
         .where(F.col("plan_id").isNotNull())
         .withColumn("plan_canonical_key",
-            canonical_key_udf(F.concat_ws("", F.col("supplier_name"), F.col("plan_name")))
+            F.regexp_replace(
+                F.lower(F.trim(F.concat_ws("", F.col("supplier_name"), F.col("plan_name")))),
+                r"[\s\-]+", ""
+            )
         )
     )
 
@@ -959,4 +950,10 @@ def get_data():
     final_call_level_sdf.createOrReplaceTempView("CALL_LEVEL_PITCHES_AND_RECS")
 
     return final_call_level_sdf.toPandas()
+
+if __name__ == "__main__":
+    df = get_data()
+    df.to_csv("/Workspace/Users/fnisbet@redventures.com/product-rec-dash/call_level_data.csv", index=False)
+    print("Done")
+
 

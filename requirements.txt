@@ -1,2 +1,2 @@
 pandas
-pyspark
+databricks-connect==16.1.7
