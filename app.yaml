@@ -1,9 +1,9 @@
 command: 
   - streamlit
   - run
-  - app.py
+  - product_rank/src/app.py
 
 schedule:
   - name: rec-query
-    command: ["python", "rec_query.py"]
+    command: ["python", "product_rank/src/rec_query.py"]
     schedule: "0 7 * * *"   # Every day at 7:00 AM UTC
