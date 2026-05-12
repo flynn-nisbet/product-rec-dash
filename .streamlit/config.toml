@@ -1,2 +1,27 @@
+# Built-in Light/Dark palettes (used when browser Settings theme matches). Sidebar toggle syncs
+# Streamlit’s cached theme via ``theme._sync_streamlit_browser_theme`` so Glide/st.dataframe follows
+# the app without relying on ⋮ → Theme alone.
 [theme]
 base = "dark"
+primaryColor = "#3d8ef8"
+backgroundColor = "#0d0f14"
+secondaryBackgroundColor = "#13161d"
+textColor = "#e8ecf4"
+dataframeHeaderBackgroundColor = "#181c25"
+dataframeBorderColor = "#252b3a"
+
+[theme.light]
+primaryColor = "#3d8ef8"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f8fafc"
+textColor = "#0f172a"
+dataframeHeaderBackgroundColor = "#f1f5f9"
+dataframeBorderColor = "#e2e8f0"
+
+[theme.dark]
+primaryColor = "#3d8ef8"
+backgroundColor = "#0d0f14"
+secondaryBackgroundColor = "#13161d"
+textColor = "#e8ecf4"
+dataframeHeaderBackgroundColor = "#181c25"
+dataframeBorderColor = "#252b3a"
