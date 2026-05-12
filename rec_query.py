@@ -1,4 +1,5 @@
 import json
+import time
 from typing import Dict, Any, List, Optional
 import pandas as pd
 from pyspark.sql import functions as F
@@ -6,13 +7,49 @@ from pyspark.sql import Window
 import os
 from datetime import date, timedelta
 from databricks.connect import DatabricksSession
+from tqdm import tqdm
+
+
+# ---------------------------------------------------------------------------
+# Helpers: step-level progress tracking
+# ---------------------------------------------------------------------------
+
+class StepTimer:
+    """Prints a labelled banner when entering a step and elapsed time on exit."""
+
+    TOTAL_STEPS = 12  # update if steps are added/removed
+
+    def __init__(self, step_num: int, label: str):
+        self.step_num = step_num
+        self.label    = label
+        self._start   = None
+
+    def __enter__(self):
+        self._start = time.time()
+        print(f"\n[{self.step_num:>2}/{self.TOTAL_STEPS}] ▶  {self.label} ...", flush=True)
+        return self
+
+    def __exit__(self, *_):
+        elapsed = time.time() - self._start
+        print(f"[{self.step_num:>2}/{self.TOTAL_STEPS}] ✔  {self.label}  ({elapsed:.1f}s)", flush=True)
+
+
+def _spark_collect(sdf, desc: str) -> pd.DataFrame:
+    """Wrap a .toPandas() call with a tqdm spinner — Spark jobs have no Python-side progress."""
+    with tqdm(total=0, desc=desc, bar_format="{desc}: {elapsed}  [collecting from Spark...]", dynamic_ncols=True) as pbar:
+        result = sdf.toPandas()
+        pbar.set_postfix_str(f"done — {len(result):,} rows")
+    return result
+
 
 def get_data():
 
-    spark = DatabricksSession.builder \
-        .host("redventures-rv-energy-prod-production-9xwiei.cloud.databricks.com") \
-        .serverless(True) \
-        .getOrCreate()
+    with StepTimer(1, "Initialising Spark session"):
+        spark = DatabricksSession.builder \
+            .host("redventures-rv-energy-prod-production-9xwiei.cloud.databricks.com") \
+            .serverless(True) \
+            .getOrCreate()
+
     # -----------------------------
     # CONSTANTS / CONFIG
     # -----------------------------
@@ -205,168 +242,176 @@ def get_data():
     # 0) Read pitch enriched data
     # -----------------------------
 
-    pitch_enriched_sdf = (
-        spark.read.table(ENRICHED_PITCH_TABLE)
-        .where(F.col("call_date").between(START_DATE, END_DATE))
-    )
-
-    pitch_order_col = pick_first_existing_column(pitch_enriched_sdf, PITCH_ORDER_CANDIDATES)
-    if pitch_order_col is None:
-        raise ValueError(
-            f"No pitch ordering column found in {ENRICHED_PITCH_TABLE}. "
-            f"Tried: {PITCH_ORDER_CANDIDATES}. Available columns: {pitch_enriched_sdf.columns}"
+    with StepTimer(2, "Reading pitch enriched data + resolving pitch-order column"):
+        pitch_enriched_sdf = (
+            spark.read.table(ENRICHED_PITCH_TABLE)
+            .where(F.col("call_date").between(START_DATE, END_DATE))
         )
+
+        pitch_order_col = pick_first_existing_column(pitch_enriched_sdf, PITCH_ORDER_CANDIDATES)
+        if pitch_order_col is None:
+            raise ValueError(
+                f"No pitch ordering column found in {ENRICHED_PITCH_TABLE}. "
+                f"Tried: {PITCH_ORDER_CANDIDATES}. Available columns: {pitch_enriched_sdf.columns}"
+            )
+        print(f"    pitch_order_col = '{pitch_order_col}'")
 
     # -----------------------------
     # 0A) Center locations from v_agent_calls
     # -----------------------------
 
-    vac_locations_sdf = (
-        spark.read.table(V_AGENT_CALLS_TABLE)
-        .select("call_id", "center_location")
-        .where(F.col("call_id").isNotNull())
-        .where(F.col("center_location").isin(TARGET_CENTER_LOCATIONS))
-        .dropDuplicates(["call_id"])
-    )
+    with StepTimer(3, "Building center-location lookup (v_agent_calls)"):
+        vac_locations_sdf = (
+            spark.read.table(V_AGENT_CALLS_TABLE)
+            .select("call_id", "center_location")
+            .where(F.col("call_id").isNotNull())
+            .where(F.col("center_location").isin(TARGET_CENTER_LOCATIONS))
+            .dropDuplicates(["call_id"])
+        )
 
     # -----------------------------
     # 1) Arcadia call ids filtered by session_start_date + center_location
     #    -- no longer used as a semi-join filter; converted to a flag
     # -----------------------------
 
-    arcadia_target_call_ids_sdf = (
-        spark.read.table(ARCADIA_TABLE).alias("a")
-        .select("call_id", "session_start_date")
-        .dropna(subset=["call_id", "session_start_date"])
-        .withColumn("session_date", F.to_date("session_start_date"))
-        .where(F.col("session_date").between(START_DATE, END_DATE))
-        .join(vac_locations_sdf.alias("vac"), on="call_id", how="inner")
-        .select("call_id")
-        .dropDuplicates()
-    )
+    with StepTimer(4, "Building Arcadia target flags + objection_reason (steps 1 & 1A)"):
+        arcadia_target_call_ids_sdf = (
+            spark.read.table(ARCADIA_TABLE).alias("a")
+            .select("call_id", "session_start_date")
+            .dropna(subset=["call_id", "session_start_date"])
+            .withColumn("session_date", F.to_date("session_start_date"))
+            .where(F.col("session_date").between(START_DATE, END_DATE))
+            .join(vac_locations_sdf.alias("vac"), on="call_id", how="inner")
+            .select("call_id")
+            .dropDuplicates()
+        )
 
-    # Flag: True if this call_id is in the arcadia target set
-    in_arcadia_target_sdf = arcadia_target_call_ids_sdf.withColumn("in_arcadia_target", F.lit(True))
+        # Flag: True if this call_id is in the arcadia target set
+        in_arcadia_target_sdf = arcadia_target_call_ids_sdf.withColumn("in_arcadia_target", F.lit(True))
 
-    # Left join instead of left_semi so we keep all calls and can flag non-target ones
-    pitch_arcadia_target_sdf = (
-        pitch_enriched_sdf
-        .join(in_arcadia_target_sdf, on="call_id", how="left")
-        .withColumn("in_arcadia_target", F.coalesce(F.col("in_arcadia_target"), F.lit(False)))
-    )
+        # Left join instead of left_semi so we keep all calls and can flag non-target ones
+        pitch_arcadia_target_sdf = (
+            pitch_enriched_sdf
+            .join(in_arcadia_target_sdf, on="call_id", how="left")
+            .withColumn("in_arcadia_target", F.coalesce(F.col("in_arcadia_target"), F.lit(False)))
+        )
 
-    # -----------------------------
-    # 1A) Arcadia call-level attrs incl. objection_reason
-    # -----------------------------
+        # -----------------------------
+        # 1A) Arcadia call-level attrs incl. objection_reason
+        # -----------------------------
 
-    arcadia_target_attrs_sdf = (
-        spark.read.table(ARCADIA_TABLE).alias("a")
-        .select("call_id", "session_start_date", "objection_reason")
-        .dropna(subset=["call_id", "session_start_date"])
-        .withColumn("session_date", F.to_date("session_start_date"))
-        .where(F.col("session_date").between(START_DATE, END_DATE))
-        .join(vac_locations_sdf.alias("vac"), on="call_id", how="inner")
-    )
+        arcadia_target_attrs_sdf = (
+            spark.read.table(ARCADIA_TABLE).alias("a")
+            .select("call_id", "session_start_date", "objection_reason")
+            .dropna(subset=["call_id", "session_start_date"])
+            .withColumn("session_date", F.to_date("session_start_date"))
+            .where(F.col("session_date").between(START_DATE, END_DATE))
+            .join(vac_locations_sdf.alias("vac"), on="call_id", how="inner")
+        )
 
-    w_arc = Window.partitionBy("call_id").orderBy(F.col("session_date").desc_nulls_last())
-    arcadia_target_attrs_sdf = (
-        arcadia_target_attrs_sdf
-        .withColumn("rn", F.row_number().over(w_arc))
-        .where(F.col("rn") == 1)
-        .select("call_id", "objection_reason")
-    )
+        w_arc = Window.partitionBy("call_id").orderBy(F.col("session_date").desc_nulls_last())
+        arcadia_target_attrs_sdf = (
+            arcadia_target_attrs_sdf
+            .withColumn("rn", F.row_number().over(w_arc))
+            .where(F.col("rn") == 1)
+            .select("call_id", "objection_reason")
+        )
 
     # -----------------------------
     # 1B) Flag calls that FAIL qualification for TXU / TriEagle
     #     -- no longer used as a left_anti filter; converted to a flag
     # -----------------------------
 
-    qual_sdf      = spark.read.table(ENERGY_QUALIFICATIONRESULT_TABLE)
-    qual_date_col = pick_first_existing_column(qual_sdf, QUAL_DATE_CANDIDATES)
+    with StepTimer(5, "Building failed-qualification flag (step 1B)"):
+        qual_sdf      = spark.read.table(ENERGY_QUALIFICATIONRESULT_TABLE)
+        qual_date_col = pick_first_existing_column(qual_sdf, QUAL_DATE_CANDIDATES)
 
-    if qual_date_col is not None:
-        qual_sdf = (
+        if qual_date_col is not None:
+            qual_sdf = (
+                qual_sdf
+                .withColumn("qual_date", F.to_date(F.col(qual_date_col)))
+                .where(F.col("qual_date").between(START_DATE, END_DATE))
+            )
+
+        failed_qual_call_ids_sdf = (
             qual_sdf
-            .withColumn("qual_date", F.to_date(F.col(qual_date_col)))
-            .where(F.col("qual_date").between(START_DATE, END_DATE))
+            .where(F.col("providerName").isin(FAILED_QUAL_PROVIDERS))
+            .where(F.upper(F.trim(F.col("response"))) == F.lit("FAILURE"))
+            .select("call_id")
+            .where(F.col("call_id").isNotNull())
+            .dropDuplicates()
         )
 
-    failed_qual_call_ids_sdf = (
-        qual_sdf
-        .where(F.col("providerName").isin(FAILED_QUAL_PROVIDERS))
-        .where(F.upper(F.trim(F.col("response"))) == F.lit("FAILURE"))
-        .select("call_id")
-        .where(F.col("call_id").isNotNull())
-        .dropDuplicates()
-    )
+        # Flag: True if this call_id failed qualification
+        failed_qual_flag_sdf = failed_qual_call_ids_sdf.withColumn("failed_qualification", F.lit(True))
 
-    # Flag: True if this call_id failed qualification
-    failed_qual_flag_sdf = failed_qual_call_ids_sdf.withColumn("failed_qualification", F.lit(True))
-
-    # Left join instead of left_anti so we keep all calls and can flag failed ones
-    pitch_arcadia_target_sdf = (
-        pitch_arcadia_target_sdf
-        .join(failed_qual_flag_sdf, on="call_id", how="left")
-        .withColumn("failed_qualification", F.coalesce(F.col("failed_qualification"), F.lit(False)))
-    )
+        # Left join instead of left_anti so we keep all calls and can flag failed ones
+        pitch_arcadia_target_sdf = (
+            pitch_arcadia_target_sdf
+            .join(failed_qual_flag_sdf, on="call_id", how="left")
+            .withColumn("failed_qualification", F.coalesce(F.col("failed_qualification"), F.lit(False)))
+        )
 
     # -----------------------------
     # 2) Call-level ordered pitches
     #    -- carry in_arcadia_target and failed_qualification through the groupBy
     # -----------------------------
 
-    pitches_ordered_sdf = (
-        pitch_arcadia_target_sdf
-        .select(
-            "call_id", "call_date", "product_pitched", "canonical_key", "plan_category",
-            "in_arcadia_target", "failed_qualification",
-            F.col(pitch_order_col).alias("pitch_order")
-        )
-        .where(F.col("product_pitched").isNotNull())
-        .groupBy("call_id", "call_date", "in_arcadia_target", "failed_qualification")
-        .agg(
-            F.sort_array(
-                F.collect_list(
-                    F.struct(
-                        F.col("pitch_order").alias("ord"),
-                        F.col("product_pitched").alias("product_pitched"),
-                        F.col("canonical_key").alias("canonical_key"),
-                        F.col("plan_category").alias("plan_category"),
+    with StepTimer(6, "Building call-level ordered pitches (step 2)"):
+        pitches_ordered_sdf = (
+            pitch_arcadia_target_sdf
+            .select(
+                "call_id", "call_date", "product_pitched", "canonical_key", "plan_category",
+                "in_arcadia_target", "failed_qualification",
+                F.col(pitch_order_col).alias("pitch_order")
+            )
+            .where(F.col("product_pitched").isNotNull())
+            .groupBy("call_id", "call_date", "in_arcadia_target", "failed_qualification")
+            .agg(
+                F.sort_array(
+                    F.collect_list(
+                        F.struct(
+                            F.col("pitch_order").alias("ord"),
+                            F.col("product_pitched").alias("product_pitched"),
+                            F.col("canonical_key").alias("canonical_key"),
+                            F.col("plan_category").alias("plan_category"),
+                        )
                     )
-                )
-            ).alias("pitches_struct")
+                ).alias("pitches_struct")
+            )
+            .withColumn("pitches_in_order",               F.expr("transform(pitches_struct, x -> x.product_pitched)"))
+            .withColumn("pitches_canonical_in_order",     F.expr("transform(pitches_struct, x -> x.canonical_key)"))
+            .withColumn("pitches_plan_category_in_order", F.expr("transform(pitches_struct, x -> x.plan_category)"))
+            .withColumn("first_pitch",                    F.element_at(F.col("pitches_in_order"), 1))
+            .withColumn("first_pitch_canonical",          F.element_at(F.col("pitches_canonical_in_order"), 1))
+            .withColumn("first_pitch_plan_category",      F.element_at(F.col("pitches_plan_category_in_order"), 1))
+            .drop("pitches_struct")
         )
-        .withColumn("pitches_in_order",               F.expr("transform(pitches_struct, x -> x.product_pitched)"))
-        .withColumn("pitches_canonical_in_order",     F.expr("transform(pitches_struct, x -> x.canonical_key)"))
-        .withColumn("pitches_plan_category_in_order", F.expr("transform(pitches_struct, x -> x.plan_category)"))
-        .withColumn("first_pitch",                    F.element_at(F.col("pitches_in_order"), 1))
-        .withColumn("first_pitch_canonical",          F.element_at(F.col("pitches_canonical_in_order"), 1))
-        .withColumn("first_pitch_plan_category",      F.element_at(F.col("pitches_plan_category_in_order"), 1))
-        .drop("pitches_struct")
-    )
 
     # -----------------------------
     # 3) Rank model outputs -> latest per call_id
     # -----------------------------
 
-    rank_sdf = (
-        spark.read.table(RAW_MODEL_EVALUATED_TABLE)
-        .where(F.col("modelFieldName").ilike("agent-assist-product-rank"))
-        .select("correlationId", "_timeStamp", "outputValueString")
-        .dropna(subset=["correlationId", "outputValueString"])
-    )
-
-    rank_pdf = rank_sdf.toPandas()
-
-    if not rank_pdf.empty:
-        rank_pdf = (
-            rank_pdf.sort_values(["correlationId", "_timeStamp"], ascending=[True, False])
-            .drop_duplicates(subset=["correlationId"], keep="first")
-            .reset_index(drop=True)
+    with StepTimer(7, "Collecting rank model outputs from Spark (step 3)"):
+        rank_sdf = (
+            spark.read.table(RAW_MODEL_EVALUATED_TABLE)
+            .where(F.col("modelFieldName").ilike("agent-assist-product-rank"))
+            .select("correlationId", "_timeStamp", "outputValueString")
+            .dropna(subset=["correlationId", "outputValueString"])
         )
 
+        rank_pdf = _spark_collect(rank_sdf, "rank model toPandas")
+
+        if not rank_pdf.empty:
+            rank_pdf = (
+                rank_pdf.sort_values(["correlationId", "_timeStamp"], ascending=[True, False])
+                .drop_duplicates(subset=["correlationId"], keep="first")
+                .reset_index(drop=True)
+            )
+        print(f"    {len(rank_pdf):,} deduplicated rank rows to parse")
+
     parsed_rank_rows = []
-    for _, row in rank_pdf.iterrows():
+    for _, row in tqdm(rank_pdf.iterrows(), total=len(rank_pdf), desc="Parsing rank payloads", unit="row", dynamic_ncols=True):
         parsed = parse_rank_payload_for_etl(row["outputValueString"])
         parsed["call_id"] = row["correlationId"]
 
@@ -427,209 +472,214 @@ def get_data():
     # 3B) Element-view flags per call
     # -----------------------------
 
-    element_viewed_sdf = spark.read.table(ELEMENT_VIEWED_TABLE)
-    element_date_col   = pick_first_existing_column(element_viewed_sdf, ELEMENT_DATE_CANDIDATES)
+    with StepTimer(8, "Building element-view flags per call (step 3B)"):
+        element_viewed_sdf = spark.read.table(ELEMENT_VIEWED_TABLE)
+        element_date_col   = pick_first_existing_column(element_viewed_sdf, ELEMENT_DATE_CANDIDATES)
 
-    if element_date_col is not None:
-        element_viewed_sdf = (
+        if element_date_col is not None:
+            element_viewed_sdf = (
+                element_viewed_sdf
+                .withColumn("element_date", F.to_date(F.col(element_date_col)))
+                .where(F.col("element_date").between(START_DATE, END_DATE))
+            )
+
+        element_flags_sdf = (
             element_viewed_sdf
-            .withColumn("element_date", F.to_date(F.col(element_date_col)))
-            .where(F.col("element_date").between(START_DATE, END_DATE))
+            .select(F.col("callId").alias("call_id"), "moduleName")
+            .where(F.col("callId").isNotNull())
+            .where(F.col("moduleName").isin("top_rec_pitch", "slide_recs_pitch", "all_plans_pitch"))
+            .groupBy("call_id")
+            .agg(
+                F.max(F.when(F.col("moduleName") == "top_rec_pitch",    1).otherwise(0)).alias("has_top_rec_pitch_view_int"),
+                F.max(F.when(F.col("moduleName") == "slide_recs_pitch", 1).otherwise(0)).alias("has_slide_recs_pitch_view_int"),
+                F.max(F.when(F.col("moduleName") == "all_plans_pitch",  1).otherwise(0)).alias("has_all_plans_pitch_view_int"),
+            )
+            .withColumn("has_top_rec_pitch_view",    F.col("has_top_rec_pitch_view_int")    == 1)
+            .withColumn("has_slide_recs_pitch_view", F.col("has_slide_recs_pitch_view_int") == 1)
+            .withColumn("has_all_plans_pitch_view",  F.col("has_all_plans_pitch_view_int")  == 1)
+            .select("call_id", "has_top_rec_pitch_view", "has_slide_recs_pitch_view", "has_all_plans_pitch_view")
         )
-
-    element_flags_sdf = (
-        element_viewed_sdf
-        .select(F.col("callId").alias("call_id"), "moduleName")
-        .where(F.col("callId").isNotNull())
-        .where(F.col("moduleName").isin("top_rec_pitch", "slide_recs_pitch", "all_plans_pitch"))
-        .groupBy("call_id")
-        .agg(
-            F.max(F.when(F.col("moduleName") == "top_rec_pitch",    1).otherwise(0)).alias("has_top_rec_pitch_view_int"),
-            F.max(F.when(F.col("moduleName") == "slide_recs_pitch", 1).otherwise(0)).alias("has_slide_recs_pitch_view_int"),
-            F.max(F.when(F.col("moduleName") == "all_plans_pitch",  1).otherwise(0)).alias("has_all_plans_pitch_view_int"),
-        )
-        .withColumn("has_top_rec_pitch_view",    F.col("has_top_rec_pitch_view_int")    == 1)
-        .withColumn("has_slide_recs_pitch_view", F.col("has_slide_recs_pitch_view_int") == 1)
-        .withColumn("has_all_plans_pitch_view",  F.col("has_all_plans_pitch_view_int")  == 1)
-        .select("call_id", "has_top_rec_pitch_view", "has_slide_recs_pitch_view", "has_all_plans_pitch_view")
-    )
 
     # -----------------------------
     # 4) Agent metadata from v_agent_calls / rpt_agent_calls
     # -----------------------------
 
-    agent_sdf = (
-        spark.read.table(RPT_AGENT_CALLS_TABLE).alias("rac")
-        .join(vac_locations_sdf.alias("vac"), on="call_id", how="inner")
-        .select(
-            F.col("rac.call_id").alias("call_id"),
-            F.col("vac.center_location").alias("center_location"),
-            F.col("rac.order_count").alias("order_count"),
-            F.col("rac.agent_tier").alias("agent_tier"),
-            F.col("rac.agent_name").alias("agent_name"),
-        )
-        .withColumn("order_rate", F.when(F.col("order_count") > 0, F.lit(1.0)).otherwise(F.lit(0.0)))
-    )
-
-    # -----------------------------
-    # 4B) Points per call
-    # -----------------------------
-
-    points_by_call_sdf = (
-        spark.read.table(ORDER_POINTS_TABLE)
-        .select("call_id", "points")
-        .where(F.col("call_id").isNotNull())
-        .where(F.col("points").isNotNull())
-        .groupBy("call_id")
-        .agg(F.sum(F.col("points").cast("double")).alias("points"))
-    )
-
-    # -----------------------------
-    # 4C) GCV per call from v_orders — using gcv_v2 directly
-    # -----------------------------
-
-    orders_sdf = spark.read.table(V_ORDERS_TABLE)
-
-    gcv_v2_col = pick_first_existing_column(orders_sdf, GCV_V2_COL_CANDIDATES)
-
-    if gcv_v2_col is None:
-        raise ValueError(
-            f"Could not find gcv_v2 column in {V_ORDERS_TABLE}. "
-            f"Tried: {GCV_V2_COL_CANDIDATES}. "
-            f"Available columns: {orders_sdf.columns}"
+    with StepTimer(9, "Building agent metadata, points, GCV & plan-points lookup (steps 4–4E)"):
+        agent_sdf = (
+            spark.read.table(RPT_AGENT_CALLS_TABLE).alias("rac")
+            .join(vac_locations_sdf.alias("vac"), on="call_id", how="inner")
+            .select(
+                F.col("rac.call_id").alias("call_id"),
+                F.col("vac.center_location").alias("center_location"),
+                F.col("rac.order_count").alias("order_count"),
+                F.col("rac.agent_tier").alias("agent_tier"),
+                F.col("rac.agent_name").alias("agent_name"),
+            )
+            .withColumn("order_rate", F.when(F.col("order_count") > 0, F.lit(1.0)).otherwise(F.lit(0.0)))
         )
 
-    gcv_by_call_sdf = (
-        orders_sdf
-        .select(
-            "call_id",
-            F.col(gcv_v2_col).alias("gcv_v2"),
+        # -----------------------------
+        # 4B) Points per call
+        # -----------------------------
+
+        points_by_call_sdf = (
+            spark.read.table(ORDER_POINTS_TABLE)
+            .select("call_id", "points")
+            .where(F.col("call_id").isNotNull())
+            .where(F.col("points").isNotNull())
+            .groupBy("call_id")
+            .agg(F.sum(F.col("points").cast("double")).alias("points"))
         )
-        .where(F.col("call_id").isNotNull())
-        .where(F.col("gcv_v2").isNotNull())
-        .withColumn("gcv_row", F.col("gcv_v2").cast("double"))
-        .groupBy("call_id")
-        .agg(F.sum("gcv_row").alias("gcv"))
-    )
 
-    # -----------------------------
-    # 4D) First-pitch plan points lookup
-    # -----------------------------
+        # -----------------------------
+        # 4C) GCV per call from v_orders — using gcv_v2 directly
+        # -----------------------------
 
-    masterlist_sdf = (
-        spark.read.table(PLAN_MASTERLIST_TABLE)
-        .select("plan_id", "plan_name", "supplier_name")
-        .where(F.col("plan_id").isNotNull())
-        .withColumn("plan_canonical_key",
-            F.regexp_replace(
-                F.lower(F.trim(F.concat_ws("", F.col("supplier_name"), F.col("plan_name")))),
-                r"[\s\-]+", ""
+        orders_sdf = spark.read.table(V_ORDERS_TABLE)
+
+        gcv_v2_col = pick_first_existing_column(orders_sdf, GCV_V2_COL_CANDIDATES)
+
+        if gcv_v2_col is None:
+            raise ValueError(
+                f"Could not find gcv_v2 column in {V_ORDERS_TABLE}. "
+                f"Tried: {GCV_V2_COL_CANDIDATES}. "
+                f"Available columns: {orders_sdf.columns}"
+            )
+
+        gcv_by_call_sdf = (
+            orders_sdf
+            .select(
+                "call_id",
+                F.col(gcv_v2_col).alias("gcv_v2"),
+            )
+            .where(F.col("call_id").isNotNull())
+            .where(F.col("gcv_v2").isNotNull())
+            .withColumn("gcv_row", F.col("gcv_v2").cast("double"))
+            .groupBy("call_id")
+            .agg(F.sum("gcv_row").alias("gcv"))
+        )
+
+        # -----------------------------
+        # 4D) First-pitch plan points lookup
+        # -----------------------------
+
+        masterlist_sdf = (
+            spark.read.table(PLAN_MASTERLIST_TABLE)
+            .select("plan_id", "plan_name", "supplier_name")
+            .where(F.col("plan_id").isNotNull())
+            .withColumn("plan_canonical_key",
+                F.regexp_replace(
+                    F.lower(F.trim(F.concat_ws("", F.col("supplier_name"), F.col("plan_name")))),
+                    r"[\s\-]+", ""
+                )
             )
         )
-    )
 
-    sold_orders_sdf = (
-        orders_sdf
-        .select("call_id", "product_id")
-        .where(F.col("call_id").isNotNull())
-        .where(F.col("product_id").isNotNull())
-        .dropDuplicates(["call_id", "product_id"])
-    )
-
-    sold_with_plan_sdf = (
-        sold_orders_sdf
-        .join(
-            masterlist_sdf.select("plan_id", "plan_canonical_key"),
-            F.col("product_id") == F.col("plan_id"),
-            how="inner"
+        sold_orders_sdf = (
+            orders_sdf
+            .select("call_id", "product_id")
+            .where(F.col("call_id").isNotNull())
+            .where(F.col("product_id").isNotNull())
+            .dropDuplicates(["call_id", "product_id"])
         )
-        .select("call_id", "plan_canonical_key")
-    )
 
-    sold_with_points_sdf = (
-        sold_with_plan_sdf
-        .join(
-            spark.read.table(ORDER_POINTS_TABLE)
-                .select("call_id", F.col("points").cast("double").alias("points"))
-                .where(F.col("call_id").isNotNull())
-                .where(F.col("points").isNotNull()),
-            on="call_id",
-            how="inner"
+        sold_with_plan_sdf = (
+            sold_orders_sdf
+            .join(
+                masterlist_sdf.select("plan_id", "plan_canonical_key"),
+                F.col("product_id") == F.col("plan_id"),
+                how="inner"
+            )
+            .select("call_id", "plan_canonical_key")
         )
-    )
 
-    w_plan = Window.partitionBy("plan_canonical_key").orderBy(F.col("call_id").desc())
-
-    plan_points_lookup_sdf = (
-        sold_with_points_sdf
-        .withColumn("rn", F.row_number().over(w_plan))
-        .where(F.col("rn") == 1)
-        .select(
-            "plan_canonical_key",
-            F.col("points").alias("first_pitch_plan_points")
+        sold_with_points_sdf = (
+            sold_with_plan_sdf
+            .join(
+                spark.read.table(ORDER_POINTS_TABLE)
+                    .select("call_id", F.col("points").cast("double").alias("points"))
+                    .where(F.col("call_id").isNotNull())
+                    .where(F.col("points").isNotNull()),
+                on="call_id",
+                how="inner"
+            )
         )
-    )
 
-    first_pitch_plan_points_sdf = (
-        pitches_ordered_sdf
-        .select("call_id", "first_pitch_canonical")
-        .where(F.col("first_pitch_canonical").isNotNull())
-        .join(
-            plan_points_lookup_sdf,
-            F.col("first_pitch_canonical") == F.col("plan_canonical_key"),
-            how="left"
-        )
-        .select("call_id", "first_pitch_plan_points")
-    )
+        w_plan = Window.partitionBy("plan_canonical_key").orderBy(F.col("call_id").desc())
 
-    # -----------------------------
-    # 4E) v_calls attrs: site_serp, marketing_bucket, mover_switcher, talk_time_minutes
-    # -----------------------------
+        plan_points_lookup_sdf = (
+            sold_with_points_sdf
+            .withColumn("rn", F.row_number().over(w_plan))
+            .where(F.col("rn") == 1)
+            .select(
+                "plan_canonical_key",
+                F.col("points").alias("first_pitch_plan_points")
+            )
+        )
 
-    v_calls_attrs_sdf = (
-        spark.read.table(V_CALLS_TABLE)
-        .select("call_id", "web_session_id", "ivr_split_name", "mover_switcher", "talk_time_minutes")
-        .where(F.col("call_id").isNotNull())
-        .dropDuplicates(["call_id"])
-        .withColumn(
-            "site_serp",
-            F.when(F.col("web_session_id").isNull(), F.lit("SERP"))
-            .otherwise(F.lit("Site"))
+        first_pitch_plan_points_sdf = (
+            pitches_ordered_sdf
+            .select("call_id", "first_pitch_canonical")
+            .where(F.col("first_pitch_canonical").isNotNull())
+            .join(
+                plan_points_lookup_sdf,
+                F.col("first_pitch_canonical") == F.col("plan_canonical_key"),
+                how="left"
+            )
+            .select("call_id", "first_pitch_plan_points")
         )
-        .withColumn(
-            "marketing_bucket",
-            F.when(
-                F.col("ivr_split_name").isin("natural_marketingbucket", "natural_marketingbucket_serp"),
-                F.lit("Natural")
-            ).when(
-                F.col("ivr_split_name").isin("brandpartner_marketingbucket", "brandpartner_marketingbucket_serp"),
-                F.lit("Brand-Partner")
-            ).when(
-                F.col("ivr_split_name").isin("generic_marketingbucket", "generic_marketingbucket_serp"),
-                F.lit("Generic")
-            ).when(
-                F.col("ivr_split_name").isin("aggregator_marketingbucket", "aggregator_marketingbucket_serp"),
-                F.lit("Aggregator")
-            ).when(
-                F.col("ivr_split_name").isin("competitor_marketingbucket", "competitor_marketingbucket_serp"),
-                F.lit("Competitor")
-            ).when(
-                F.col("ivr_split_name").isin("dereg_utility_check", "dereg_utility_check_serp"),
-                F.lit("Utility")
-            ).when(
-                F.col("ivr_split_name").isin("pmax_marketingbucket", "pmax_marketingbucket_serp"),
-                F.lit("PMax")
-            ).when(
-                F.col("ivr_split_name").isin("nrg_bucket", "nrg_bucket_serp"),
-                F.lit("NRG")
-            ).otherwise(F.lit("Other Bucket"))
+
+        # -----------------------------
+        # 4E) v_calls attrs: site_serp, marketing_bucket, mover_switcher, talk_time_minutes
+        # -----------------------------
+
+        v_calls_attrs_sdf = (
+            spark.read.table(V_CALLS_TABLE)
+            .select("call_id", "web_session_id", "ivr_split_name", "mover_switcher", "talk_time_minutes")
+            .where(F.col("call_id").isNotNull())
+            .dropDuplicates(["call_id"])
+            .withColumn(
+                "site_serp",
+                F.when(F.col("web_session_id").isNull(), F.lit("SERP"))
+                .otherwise(F.lit("Site"))
+            )
+            .withColumn(
+                "marketing_bucket",
+                F.when(
+                    F.col("ivr_split_name").isin("natural_marketingbucket", "natural_marketingbucket_serp"),
+                    F.lit("Natural")
+                ).when(
+                    F.col("ivr_split_name").isin("brandpartner_marketingbucket", "brandpartner_marketingbucket_serp"),
+                    F.lit("Brand-Partner")
+                ).when(
+                    F.col("ivr_split_name").isin("generic_marketingbucket", "generic_marketingbucket_serp"),
+                    F.lit("Generic")
+                ).when(
+                    F.col("ivr_split_name").isin("aggregator_marketingbucket", "aggregator_marketingbucket_serp"),
+                    F.lit("Aggregator")
+                ).when(
+                    F.col("ivr_split_name").isin("competitor_marketingbucket", "competitor_marketingbucket_serp"),
+                    F.lit("Competitor")
+                ).when(
+                    F.col("ivr_split_name").isin("dereg_utility_check", "dereg_utility_check_serp"),
+                    F.lit("Utility")
+                ).when(
+                    F.col("ivr_split_name").isin("pmax_marketingbucket", "pmax_marketingbucket_serp"),
+                    F.lit("PMax")
+                ).when(
+                    F.col("ivr_split_name").isin("nrg_bucket", "nrg_bucket_serp"),
+                    F.lit("NRG")
+                ).otherwise(F.lit("Other Bucket"))
+            )
+            .select("call_id", "site_serp", "marketing_bucket", "mover_switcher", "talk_time_minutes")
         )
-        .select("call_id", "site_serp", "marketing_bucket", "mover_switcher", "talk_time_minutes")
-    )
 
     # -----------------------------
     # 5) Final join + derived columns
     # -----------------------------
+
+    print(f"\n[10/{StepTimer.TOTAL_STEPS}] ▶  Building final call-level DataFrame (step 5 — large join + derived cols) ...", flush=True)
+    _step10_start = time.time()
 
     PITCH_TIER_SQL = """
     case
@@ -895,65 +945,140 @@ def get_data():
         "has_low_rec",            # True  = model recommended a 'Low' deposit plan type
         "happy_path",             # 1 = passed all exclusions; 0 = excluded by >=1 reason
     )
+    print(f"[10/{StepTimer.TOTAL_STEPS}] ✔  Final call-level DataFrame plan built  ({time.time() - _step10_start:.1f}s)", flush=True)
 
     # -----------------------------
     # Agent-level performance
     # -----------------------------
 
-    agent_perf_sdf = (
-        final_call_level_sdf
-        .where(F.col("agent_name").isNotNull())
-        .groupBy("agent_name")
-        .agg(F.avg(F.col("points_on_first_pitch")).alias("avg_points_on_first_pitch"))
-    )
-
-    w = Window.orderBy(F.col("avg_points_on_first_pitch").desc_nulls_last())
-    agent_perf_sdf = agent_perf_sdf.withColumn("performance_quartile", F.ntile(4).over(w))
-
-    final_call_level_sdf = (
-        final_call_level_sdf
-        .join(
-            agent_perf_sdf.select("agent_name", "avg_points_on_first_pitch", "performance_quartile"),
-            on="agent_name", how="left"
+    with StepTimer(11, "Computing agent-level performance quartiles"):
+        agent_perf_sdf = (
+            final_call_level_sdf
+            .where(F.col("agent_name").isNotNull())
+            .groupBy("agent_name")
+            .agg(F.avg(F.col("points_on_first_pitch")).alias("avg_points_on_first_pitch"))
         )
-    )
 
-    # ── Final select (after agent perf join) ──────────────────────────────────────
-    final_call_level_sdf = final_call_level_sdf.select(
-        "call_id", "center_location", "agent_name", "agent_tier",
-        "performance_quartile", "avg_points_on_first_pitch",
-        "call_date", "order_count", "order_rate", "points", "points_on_first_pitch",
-        "gcv", "gcv_on_first_pitch", "objection_reason",
-        "site_serp", "marketing_bucket", "mover_switcher", "talk_time_minutes",
-        "pitches_in_order", "pitches_canonical_in_order", "pitches_plan_category_in_order",
-        "first_pitch", "first_pitch_canonical", "first_pitch_plan_category",
-        "recommended_in_order", "recommended_canonical_in_order",
-        "recommended_plan_types_in_order", "top_recommended_plan_type",
-        "raw_prob_fixed", "raw_prob_tiered", "raw_prob_bundled", "raw_prob_low",
-        "expected_points_fixed", "expected_points_tiered",
-        "expected_points_bundled", "expected_points_low",
-        "expected_points_gap_1_2", "expected_points_gap_2_3",
-        "has_top_rec_pitch_view", "has_slide_recs_pitch_view", "has_all_plans_pitch_view",
-        "pitched_top_rec_first", "pitched_slide_rec_first", "pitched_all_plans_first",
-        "product_type_adhered", "plan_adhered", "slide_first", "all_plans_first",
-        "all_plans_product_type_adhered", "adhered_call", "slide_call", "all_plans_call",
-        "classification_bucket", "first_pitch_type", "pitch_types_in_order", "sale_type",
-        "first_pitch_plan_points",
-        # ── exclusion audit columns ───────────────────────────────────────────────
-        "in_arcadia_target",      # False = not in target center location or date window
-        "failed_qualification",   # True  = failed qual for TXU Energy or TriEagle Energy
-        "has_payless_pitch",      # True  = had a Payless product in the pitch list
-        "has_low_rec",            # True  = model recommended a 'Low' deposit plan type
-        "happy_path",             # 1 = passed all exclusions; 0 = excluded by >=1 reason
-    )
+        w = Window.orderBy(F.col("avg_points_on_first_pitch").desc_nulls_last())
+        agent_perf_sdf = agent_perf_sdf.withColumn("performance_quartile", F.ntile(4).over(w))
 
-    final_call_level_sdf.createOrReplaceTempView("CALL_LEVEL_PITCHES_AND_RECS")
+        final_call_level_sdf = (
+            final_call_level_sdf
+            .join(
+                agent_perf_sdf.select("agent_name", "avg_points_on_first_pitch", "performance_quartile"),
+                on="agent_name", how="left"
+            )
+        )
 
-    return final_call_level_sdf.toPandas()
+        # ── Final select (after agent perf join) ──────────────────────────────────────
+        final_call_level_sdf = final_call_level_sdf.select(
+            "call_id", "center_location", "agent_name", "agent_tier",
+            "performance_quartile", "avg_points_on_first_pitch",
+            "call_date", "order_count", "order_rate", "points", "points_on_first_pitch",
+            "gcv", "gcv_on_first_pitch", "objection_reason",
+            "site_serp", "marketing_bucket", "mover_switcher", "talk_time_minutes",
+            "pitches_in_order", "pitches_canonical_in_order", "pitches_plan_category_in_order",
+            "first_pitch", "first_pitch_canonical", "first_pitch_plan_category",
+            "recommended_in_order", "recommended_canonical_in_order",
+            "recommended_plan_types_in_order", "top_recommended_plan_type",
+            "raw_prob_fixed", "raw_prob_tiered", "raw_prob_bundled", "raw_prob_low",
+            "expected_points_fixed", "expected_points_tiered",
+            "expected_points_bundled", "expected_points_low",
+            "expected_points_gap_1_2", "expected_points_gap_2_3",
+            "has_top_rec_pitch_view", "has_slide_recs_pitch_view", "has_all_plans_pitch_view",
+            "pitched_top_rec_first", "pitched_slide_rec_first", "pitched_all_plans_first",
+            "product_type_adhered", "plan_adhered", "slide_first", "all_plans_first",
+            "all_plans_product_type_adhered", "adhered_call", "slide_call", "all_plans_call",
+            "classification_bucket", "first_pitch_type", "pitch_types_in_order", "sale_type",
+            "first_pitch_plan_points",
+            # ── exclusion audit columns ───────────────────────────────────────────────
+            "in_arcadia_target",      # False = not in target center location or date window
+            "failed_qualification",   # True  = failed qual for TXU Energy or TriEagle Energy
+            "has_payless_pitch",      # True  = had a Payless product in the pitch list
+            "has_low_rec",            # True  = model recommended a 'Low' deposit plan type
+            "happy_path",             # 1 = passed all exclusions; 0 = excluded by >=1 reason
+        )
+
+        final_call_level_sdf.createOrReplaceTempView("CALL_LEVEL_PITCHES_AND_RECS")
+
+    with StepTimer(12, "Collecting final DataFrame from Spark → pandas"):
+        result_df = _spark_collect(final_call_level_sdf, "final toPandas")
+        print(f"    Final shape: {result_df.shape[0]:,} rows × {result_df.shape[1]} cols")
+
+    return result_df
+
+
+def save_chunked_csv(df: pd.DataFrame, base_dir: str, base_filename: str, max_bytes: int = 9 * 1024 * 1024) -> list[str]:
+    """
+    Save a DataFrame to one or more CSV files, each under max_bytes (default 9 MB).
+
+    Strategy:
+      1. Estimate bytes-per-row from a small sample to avoid a full serialize-to-memory pass.
+      2. Compute row-count-per-chunk from that estimate.
+      3. Slice df in bulk chunks and write each with df.to_csv() — pandas' C-level writer,
+         orders of magnitude faster than iterrows().
+      4. After writing, check actual file size; if a chunk came in over limit (rare, due to
+         estimate variance), bisect it recursively until it fits.
+
+    Files are written to: base_dir/YYYY-MM-DD/<base_filename>_1.csv, _2.csv, ...
+    Returns the list of file paths written.
+    """
+    today_str = 'data'
+    out_dir   = os.path.join(base_dir, today_str)
+    os.makedirs(out_dir, exist_ok=True)
+
+    # ── 1. Estimate bytes per row from a sample ───────────────────────────────
+    sample_size  = min(500, len(df))
+    sample_csv   = df.iloc[:sample_size].to_csv(index=False)
+    header_bytes = len(sample_csv.encode("utf-8").split(b"\n", 1)[0]) + 1  # header line
+    body_bytes   = len(sample_csv.encode("utf-8")) - header_bytes
+    bytes_per_row = body_bytes / sample_size if sample_size else 200
+    rows_per_chunk = max(1, int((max_bytes - header_bytes) / bytes_per_row))
+
+    total_rows = len(df)
+    n_chunks_est = max(1, -(-total_rows // rows_per_chunk))  # ceiling division
+    print(f"  Estimated {bytes_per_row:.0f} bytes/row → ~{rows_per_chunk:,} rows/chunk "
+          f"(~{n_chunks_est} file{'s' if n_chunks_est != 1 else ''})", flush=True)
+
+    written_files: list[str] = []
+    file_index = 1
+
+    def _write_chunk(chunk_df: pd.DataFrame) -> None:
+        """Write one chunk, bisecting if it ends up over the size limit."""
+        nonlocal file_index
+        if chunk_df.empty:
+            return
+        file_path = os.path.join(out_dir, f"{base_filename}_{file_index}.csv")
+        chunk_df.to_csv(file_path, index=False)
+        actual_bytes = os.path.getsize(file_path)
+        if actual_bytes > max_bytes and len(chunk_df) > 1:
+            # Chunk came in over limit — bisect and rewrite
+            os.remove(file_path)
+            mid = len(chunk_df) // 2
+            _write_chunk(chunk_df.iloc[:mid])
+            _write_chunk(chunk_df.iloc[mid:])
+        else:
+            tqdm.write(f"  ✔ {file_path}  ({actual_bytes / 1024 / 1024:.2f} MB, {len(chunk_df):,} rows)")
+            written_files.append(file_path)
+            file_index += 1
+
+    # ── 2. Slice and write in bulk ─────────────────────────────────────────────
+    starts = range(0, total_rows, rows_per_chunk)
+    for start in tqdm(starts, desc="Writing chunked CSV", unit="chunk", dynamic_ncols=True):
+        _write_chunk(df.iloc[start : start + rows_per_chunk])
+
+    print(f"\nTotal files written: {len(written_files)}")
+    return written_files
+
 
 if __name__ == "__main__":
     df = get_data()
-    df.to_csv("/Workspace/Users/fnisbet@redventures.com/product-rec-dash/call_level_data.csv", index=False)
+
+    save_chunked_csv(
+        df=df,
+        base_dir="/Workspace/Users/fnisbet@redventures.com/product-rec-dash",
+        base_filename="call_level_data",
+        max_bytes=9 * 1024 * 1024,  # 9 MB
+    )
+
     print("Done")
-
-
