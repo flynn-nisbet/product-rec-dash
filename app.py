@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import os
 import plotly.graph_objects as go
-from datetime import timedelta
+from datetime import date, timedelta
 
 st.set_page_config(
     page_title="Product Rank Dash",
@@ -10,410 +10,26 @@ st.set_page_config(
     layout="wide",
 )
 
-# ── Custom CSS ────────────────────────────────────────────────────────────────
-st.markdown("""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=DM+Mono:wght@300;400;500&family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;1,300&display=swap');
+import theme
 
-/* ── Root & Body ── */
-:root {
-    --bg-base:       #0d0f14;
-    --bg-card:       #13161d;
-    --bg-card-alt:   #181c25;
-    --bg-hover:      #1e2330;
-    --border:        #252b3a;
-    --border-bright: #2e3649;
-    --accent:        #3d8ef8;
-    --accent-dim:    #2563c4;
-    --accent-glow:   rgba(61, 142, 248, 0.12);
-    --teal:          #22d3c8;
-    --amber:         #f5a623;
-    --rose:          #f43f5e;
-    --green:         #22c55e;
-    --text-primary:  #e8ecf4;
-    --text-secondary:#8b95aa;
-    --text-muted:    #4d5669;
-    --radius:        8px;
-    --radius-lg:     12px;
-}
+theme.init_browser_query_state()
 
-/* Global font override */
-html, body, [class*="css"], .stApp, .stMarkdown, p, span, div, label {
-    font-family: 'DM Sans', sans-serif !important;
-    color: var(--text-primary);
-}
-
-/* App background */
-.stApp {
-    background-color: var(--bg-base) !important;
-    background-image:
-        radial-gradient(ellipse 80% 40% at 50% -10%, rgba(61,142,248,0.08) 0%, transparent 60%),
-        radial-gradient(ellipse 40% 30% at 90% 80%, rgba(34,211,200,0.04) 0%, transparent 50%);
-}
-
-/* Main content area */
-.main .block-container {
-    padding: 2rem 2.5rem 4rem !important;
-    max-width: 1600px !important;
-}
-
-/* ── Sidebar ── */
-[data-testid="stSidebar"] {
-    background-color: var(--bg-card) !important;
-    border-right: 1px solid var(--border) !important;
-}
-[data-testid="stSidebar"] .stMarkdown h1,
-[data-testid="stSidebar"] .stMarkdown h2,
-[data-testid="stSidebar"] .stMarkdown h3 {
-    font-family: 'Syne', sans-serif !important;
-    color: var(--text-primary) !important;
-    letter-spacing: 0.04em;
-}
-[data-testid="stSidebar"] .stTitle > * {
-    font-family: 'Syne', sans-serif !important;
-    font-size: 1.1rem !important;
-    font-weight: 700 !important;
-    letter-spacing: 0.08em !important;
-    text-transform: uppercase !important;
-    color: var(--accent) !important;
-}
-
-/* Sidebar labels */
-[data-testid="stSidebar"] label,
-[data-testid="stSidebar"] .stSelectbox label,
-[data-testid="stSidebar"] .stMultiSelect label,
-[data-testid="stSidebar"] .stDateInput label,
-[data-testid="stSidebar"] .stToggle label {
-    font-size: 0.7rem !important;
-    font-weight: 500 !important;
-    letter-spacing: 0.1em !important;
-    text-transform: uppercase !important;
-    color: var(--text-secondary) !important;
-}
-
-/* ── Headings ── */
-h1, h2, h3, h4 {
-    font-family: 'Syne', sans-serif !important;
-    color: var(--text-primary) !important;
-}
-h1 { font-size: 1.8rem !important; font-weight: 800 !important; letter-spacing: -0.01em !important; }
-h2 { font-size: 1.25rem !important; font-weight: 700 !important; letter-spacing: 0.01em !important; }
-h3 { font-size: 1rem !important; font-weight: 600 !important; }
-
-/* Title */
-[data-testid="stHeading"] h1 {
-    background: linear-gradient(135deg, var(--text-primary) 0%, var(--accent) 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-    font-size: 2rem !important;
-    font-weight: 800 !important;
-    letter-spacing: -0.02em !important;
-    padding-bottom: 0.1em;
-}
-
-/* Caption / helper text */
-.stCaptionContainer, [data-testid="stCaptionContainer"], small, caption {
-    color: var(--text-secondary) !important;
-    font-size: 0.78rem !important;
-    line-height: 1.5 !important;
-}
-
-/* ── Metric Cards ── */
-[data-testid="stMetric"] {
-    background: var(--bg-card) !important;
-    border: 1px solid var(--border) !important;
-    border-radius: var(--radius-lg) !important;
-    padding: 1rem 1.25rem !important;
-    transition: border-color 0.2s, box-shadow 0.2s !important;
-    position: relative;
-    overflow: hidden;
-}
-[data-testid="stMetric"]::before {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 2px;
-    background: linear-gradient(90deg, var(--accent), var(--teal));
-    opacity: 0;
-    transition: opacity 0.2s;
-}
-[data-testid="stMetric"]:hover {
-    border-color: var(--border-bright) !important;
-    box-shadow: 0 0 0 1px var(--border-bright), 0 4px 20px rgba(0,0,0,0.4) !important;
-}
-[data-testid="stMetric"]:hover::before {
-    opacity: 1;
-}
-[data-testid="stMetricLabel"] {
-    font-size: 0.68rem !important;
-    font-weight: 500 !important;
-    letter-spacing: 0.1em !important;
-    text-transform: uppercase !important;
-    color: var(--text-secondary) !important;
-    font-family: 'DM Sans', sans-serif !important;
-}
-[data-testid="stMetricValue"] {
-    font-family: 'DM Mono', monospace !important;
-    font-size: 1.5rem !important;
-    font-weight: 500 !important;
-    color: var(--text-primary) !important;
-    line-height: 1.2 !important;
-}
-[data-testid="stMetricDelta"] {
-    font-family: 'DM Mono', monospace !important;
-    font-size: 0.75rem !important;
-}
-[data-testid="stMetricDelta"] svg { display: none !important; }
-
-/* ── Tabs ── */
-[data-testid="stTabs"] [role="tablist"] {
-    border-bottom: 1px solid var(--border) !important;
-    gap: 0 !important;
-    background: transparent !important;
-}
-[data-testid="stTabs"] [role="tab"] {
-    font-family: 'Syne', sans-serif !important;
-    font-size: 0.78rem !important;
-    font-weight: 600 !important;
-    letter-spacing: 0.07em !important;
-    text-transform: uppercase !important;
-    color: var(--text-muted) !important;
-    padding: 0.6rem 1.25rem !important;
-    border: none !important;
-    border-bottom: 2px solid transparent !important;
-    background: transparent !important;
-    transition: color 0.15s, border-color 0.15s !important;
-}
-[data-testid="stTabs"] [role="tab"]:hover {
-    color: var(--text-secondary) !important;
-    border-bottom-color: var(--border-bright) !important;
-}
-[data-testid="stTabs"] [role="tab"][aria-selected="true"] {
-    color: var(--accent) !important;
-    border-bottom-color: var(--accent) !important;
-    background: transparent !important;
-}
-
-/* ── Divider ── */
-hr {
-    border: none !important;
-    border-top: 1px solid var(--border) !important;
-    margin: 2rem 0 !important;
-}
-
-/* ── Inputs & Selects ── */
-.stSelectbox > div > div,
-.stMultiSelect > div > div,
-.stTextInput > div > div > input,
-.stDateInput > div > div > input {
-    background-color: var(--bg-card-alt) !important;
-    border: 1px solid var(--border-bright) !important;
-    border-radius: var(--radius) !important;
-    color: var(--text-primary) !important;
-    font-family: 'DM Sans', sans-serif !important;
-    font-size: 0.85rem !important;
-    transition: border-color 0.15s !important;
-}
-.stSelectbox > div > div:focus-within,
-.stMultiSelect > div > div:focus-within,
-.stTextInput > div > div > input:focus,
-.stDateInput > div > div > input:focus {
-    border-color: var(--accent) !important;
-    box-shadow: 0 0 0 2px var(--accent-glow) !important;
-    outline: none !important;
-}
-
-/* Dropdown options */
-[data-baseweb="menu"] {
-    background-color: var(--bg-card-alt) !important;
-    border: 1px solid var(--border-bright) !important;
-    border-radius: var(--radius) !important;
-}
-[data-baseweb="menu"] li {
-    font-family: 'DM Sans', sans-serif !important;
-    font-size: 0.85rem !important;
-    color: var(--text-primary) !important;
-}
-[data-baseweb="menu"] li:hover {
-    background-color: var(--bg-hover) !important;
-}
-
-/* Multiselect tags */
-[data-baseweb="tag"] {
-    background-color: var(--accent-dim) !important;
-    border: none !important;
-    border-radius: 4px !important;
-    font-size: 0.75rem !important;
-}
-
-/* ── Radio Buttons ── */
-.stRadio > div {
-    gap: 0.5rem !important;
-    background: transparent !important;
-    border: none !important;
-    padding: 0 !important;
-    display: inline-flex !important;
-}
-.stRadio label {
-    font-size: 0.75rem !important;
-    font-weight: 500 !important;
-    letter-spacing: 0.05em !important;
-    text-transform: uppercase !important;
-    padding: 0.3rem 0.85rem !important;
-    border-radius: 6px !important;
-    cursor: pointer !important;
-    color: var(--text-secondary) !important;
-    background: transparent !important;
-    transition: color 0.15s !important;
-}
-.stRadio [data-checked="true"] + label,
-.stRadio input:checked + div {
-    background: transparent !important;
-    color: var(--accent) !important;
-    font-weight: 600 !important;
-}
-
-/* ── Toggle ── */
-.stToggle [data-checked] {
-    background-color: var(--accent) !important;
-}
-
-/* ── Dataframe / Table ── */
-[data-testid="stDataFrame"],
-.stDataFrame {
-    border: 1px solid var(--border) !important;
-    border-radius: var(--radius-lg) !important;
-    overflow: hidden !important;
-}
-[data-testid="stDataFrame"] thead th {
-    background: var(--bg-card-alt) !important;
-    font-family: 'DM Sans', sans-serif !important;
-    font-size: 0.68rem !important;
-    font-weight: 600 !important;
-    letter-spacing: 0.1em !important;
-    text-transform: uppercase !important;
-    color: var(--text-secondary) !important;
-    border-bottom: 1px solid var(--border-bright) !important;
-    padding: 0.6rem 0.8rem !important;
-}
-[data-testid="stDataFrame"] tbody td {
-    font-family: 'DM Mono', monospace !important;
-    font-size: 0.82rem !important;
-    color: var(--text-primary) !important;
-    border-bottom: 1px solid var(--border) !important;
-    padding: 0.5rem 0.8rem !important;
-    background: var(--bg-card) !important;
-}
-[data-testid="stDataFrame"] tbody tr:hover td {
-    background: var(--bg-hover) !important;
-}
-
-/* ── Buttons ── */
-.stButton > button {
-    background: var(--accent) !important;
-    color: white !important;
-    border: none !important;
-    border-radius: var(--radius) !important;
-    font-family: 'DM Sans', sans-serif !important;
-    font-size: 0.8rem !important;
-    font-weight: 600 !important;
-    letter-spacing: 0.05em !important;
-    padding: 0.5rem 1.25rem !important;
-    transition: all 0.15s !important;
-}
-.stButton > button:hover {
-    background: var(--accent-dim) !important;
-    box-shadow: 0 4px 12px rgba(61,142,248,0.3) !important;
-    transform: translateY(-1px) !important;
-}
-
-/* ── Subheader styling ── */
-[data-testid="stHeading"] h2,
-.stMarkdown h2 {
-    color: var(--text-primary) !important;
-    font-size: 1.1rem !important;
-    font-weight: 700 !important;
-    letter-spacing: 0.02em !important;
-    padding-top: 0.25rem !important;
-    padding-bottom: 0.5rem !important;
-    border-bottom: 1px solid var(--border) !important;
-    margin-bottom: 1rem !important;
-}
-
-/* ── Info / Warning boxes ── */
-[data-testid="stInfo"] {
-    background: rgba(61,142,248,0.08) !important;
-    border: 1px solid rgba(61,142,248,0.25) !important;
-    border-radius: var(--radius) !important;
-    color: var(--accent) !important;
-    font-size: 0.85rem !important;
-}
-[data-testid="stWarning"] {
-    background: rgba(245,166,35,0.08) !important;
-    border: 1px solid rgba(245,166,35,0.25) !important;
-    border-radius: var(--radius) !important;
-    color: var(--amber) !important;
-}
-
-/* Caption row under title */
-[data-testid="stCaptionContainer"] p {
-    color: var(--text-muted) !important;
-    font-size: 0.78rem !important;
-    font-family: 'DM Mono', monospace !important;
-    letter-spacing: 0.05em !important;
-}
-
-/* ── Section label (bold markdown) ── */
-.stMarkdown strong {
-    color: var(--text-primary) !important;
-    font-weight: 600 !important;
-}
-
-/* Scrollbar */
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: var(--bg-base); }
-::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
-</style>
-""", unsafe_allow_html=True)
-
-# ── Plotly dark theme ──────────────────────────────────────────────────────────
-import plotly.io as pio
-
-PLOT_LAYOUT = dict(
-    paper_bgcolor="rgba(0,0,0,0)",
-    plot_bgcolor="rgba(0,0,0,0)",
-    font=dict(family="DM Sans, sans-serif", color="#8b95aa", size=12),
-    xaxis=dict(
-        gridcolor="#1e2330",
-        linecolor="#252b3a",
-        tickcolor="#252b3a",
-        zerolinecolor="#252b3a",
-    ),
-    yaxis=dict(
-        gridcolor="#1e2330",
-        linecolor="#252b3a",
-        tickcolor="#252b3a",
-        zerolinecolor="#252b3a",
-    ),
-    legend=dict(
-        bgcolor="rgba(19,22,29,0.8)",
-        bordercolor="#252b3a",
-        borderwidth=1,
-        font=dict(size=11, color="#8b95aa"),
-    ),
-    colorway=["#3d8ef8", "#22d3c8", "#f5a623", "#f43f5e", "#a78bfa", "#22c55e"],
+from charts import (
+    PLOT_COLORWAY,
+    apply_chart_theme,
+    area_fill_primary,
+    bar_outside_textfont,
+    chart_hist_stroke_and_title,
+    chart_hline_reference,
+    chart_muted,
+    heatmap_colorbar_dict,
+    heatmap_colorscale,
+    histogram_marker_line,
+    plotly_axis_lines,
 )
 
-def apply_dark_theme(fig, **extra):
-    layout = {**PLOT_LAYOUT, **extra}
-    fig.update_layout(**layout)
-    return fig
 
 # ── Load data ─────────────────────────────────────────────────────────────────
-import pandas as pd
-import os
 
 @st.cache_data(ttl="24h")
 def load_data():
@@ -471,6 +87,11 @@ with st.sidebar:
 
     happy_only = st.toggle("Happy Path Calls Only", value=True, key="filter_happy_path")
 
+    st.divider()
+    _product_rec_theme_choice = theme.render_app_theme_toggle()
+
+theme.inject_app_styles(light=_product_rec_theme_choice == "Light")
+
 # ── Apply filters ─────────────────────────────────────────────────────────────
 def apply_non_date_filters(base):
     d = base.copy()
@@ -499,6 +120,86 @@ if date_range and len(date_range) == 2 and "call_date" in df.columns:
     df = df[(df["call_date"].dt.date >= date_range[0]) & (df["call_date"].dt.date <= date_range[1])]
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
+def report_through_date() -> date:
+    """Last full calendar day for WTD / P4WA comparisons (excludes unreliable intra-day today)."""
+    return date.today() - timedelta(days=1)
+
+
+def monday_of_week_containing(d: date) -> date:
+    """Monday-start calendar week containing ``d`` (``weekday()``: Mon=0 … Sun=6)."""
+    return d - timedelta(days=d.weekday())
+
+
+def wtd_vs_four_week_pooled(source: pd.DataFrame, metric_fn, date_col: str = "call_date"):
+    """Partial Mon–Sun week (Mon through ``as_of``) vs pooled P4WA on four prior full Mon–Sun weeks.
+
+    ``as_of`` is ``min(report_through_date(), max call date in ``source``)``. P4WA runs ``metric_fn``
+    once on all calls from Mon ``week_start − 28`` through Sun ``week_start − 1`` (pooled, not an
+    average of weekly KPIs).
+    """
+    if date_col not in source.columns:
+        return None, None
+    tmp = source.dropna(subset=[date_col]).copy()
+    if tmp.empty:
+        return None, None
+    data_max = pd.to_datetime(tmp[date_col].max()).date()
+    as_of = min(report_through_date(), data_max)
+    week_start = monday_of_week_containing(as_of)
+
+    def _slice(d0: date, d1: date):
+        m = (tmp[date_col].dt.date >= d0) & (tmp[date_col].dt.date <= d1)
+        return tmp.loc[m]
+
+    cur = metric_fn(_slice(week_start, as_of))
+    pool_start = week_start - timedelta(days=28)
+    pool_end = week_start - timedelta(days=1)
+    baseline = metric_fn(_slice(pool_start, pool_end))
+    if baseline is not None and isinstance(baseline, float) and pd.isna(baseline):
+        baseline = float("nan")
+    return cur, baseline
+
+
+def wk_pct_delta_vs_avg(cur, baseline):
+    """Streamlit metric delta string: percent change of current vs pooled baseline (Arcadia-style)."""
+    if cur is None or baseline is None:
+        return None
+    try:
+        if pd.isna(cur) or pd.isna(baseline):
+            return None
+    except TypeError:
+        return None
+    if float(baseline) == 0:
+        return None
+    return f"{(float(cur) / float(baseline) - 1) * 100:+.1f}% vs P4WA"
+
+
+def fmt_metric_val_pct(x):
+    try:
+        if x is None or pd.isna(x):
+            return "—"
+    except TypeError:
+        return "—"
+    return f"{float(x):.1f}%"
+
+
+def fmt_metric_val_float(x, nd: int = 2):
+    try:
+        if x is None or pd.isna(x):
+            return "—"
+    except TypeError:
+        return "—"
+    return f"{float(x):.{nd}f}"
+
+
+def fmt_metric_val_dollar(x):
+    try:
+        if x is None or pd.isna(x):
+            return "—"
+    except TypeError:
+        return "—"
+    return f"${float(x):,.0f}"
+
+
 PERIOD_OPTIONS = ["Daily", "Weekly", "Monthly"]
 PERIOD_CODE    = {"Daily": "D", "Weekly": "W", "Monthly": "M"}
 PERIOD_FMT     = {"Daily": "%b %d", "Weekly": "%b %d", "Monthly": "%b %Y"}
@@ -520,38 +221,17 @@ def fmt_week(s):
     except Exception:
         return str(s)
 
-def week_mix(source_df, plan_type):
-    if "call_date" not in source_df.columns or "top_recommended_plan_type" not in source_df.columns:
-        return None, None
-    tmp = source_df.dropna(subset=["call_date", "top_recommended_plan_type"]).copy()
-    tmp["week"] = tmp["call_date"].dt.to_period("W")
-    weeks = sorted(tmp["week"].unique())
-    if len(weeks) < 2:
-        return None, None
-    this_w, prev_w = weeks[-1], weeks[-2]
-    def mix_for(w):
-        sub = tmp[tmp["week"] == w]
-        if len(sub) == 0:
-            return None
-        return (sub["top_recommended_plan_type"] == plan_type).mean() * 100
-    return mix_for(this_w), mix_for(prev_w)
+def mix_share_pct(slice_df: pd.DataFrame, plan_type: str) -> float:
+    if slice_df.empty or "top_recommended_plan_type" not in slice_df.columns:
+        return float("nan")
+    return (slice_df["top_recommended_plan_type"] == plan_type).mean() * 100
 
-def kpi_delta(source_df, metric_fn, label=""):
-    if "call_date" not in source_df.columns:
-        return None, None
-    max_date = source_df["call_date"].max()
-    if pd.isna(max_date):
-        return None, None
-    this_start = max_date - timedelta(days=6)
-    prev_start = max_date - timedelta(days=13)
-    prev_end   = max_date - timedelta(days=7)
-    this_w = source_df[(source_df["call_date"].dt.date >= this_start.date()) &
-                       (source_df["call_date"].dt.date <= max_date.date())]
-    prev_w = source_df[(source_df["call_date"].dt.date >= prev_start.date()) &
-                       (source_df["call_date"].dt.date <= prev_end.date())]
-    return metric_fn(this_w), metric_fn(prev_w)
 
-# ── Header ────────────────────────────────────────────────────────────────────
+# Plotly: side-by-side charts share height + margins so x-axes line up at the same baseline.
+PAIR_CHART_HEIGHT = 400
+PAIR_CHART_MARGIN = dict(l=52, r=24, t=56, b=104)
+PAIR_CHART_LAYOUT = dict(height=PAIR_CHART_HEIGHT, margin=PAIR_CHART_MARGIN)
+PAIR_LEGEND_BELOW = dict(orientation="h", yanchor="top", y=-0.28, x=0.5, xanchor="center")
 date_str = ""
 if "call_date" in df.columns and df["call_date"].notna().any():
     mn = df["call_date"].min().strftime("%b %d")
@@ -572,20 +252,35 @@ with tab_model:
     # ── Section 1: Recommendation Mix ────────────────────────────────────────
     st.subheader("Recommendation Mix Over Time")
 
-    if "top_recommended_plan_type" in df_nodatefilter.columns:
+    if "top_recommended_plan_type" in df_nodatefilter.columns and "call_date" in df_nodatefilter.columns:
         plan_types_all = sorted(df_nodatefilter["top_recommended_plan_type"].dropna().unique().tolist())
-        trend_cols = st.columns(len(plan_types_all))
-        for i, pt in enumerate(plan_types_all):
-            this_pct, prev_pct = week_mix(df_nodatefilter, pt)
-            if this_pct is not None:
-                delta_str = None
-                if prev_pct is not None:
-                    delta_str = f"{this_pct - prev_pct:+.1f}pp vs prior week"
+        if plan_types_all:
+            _wdf_mix = df_nodatefilter.dropna(subset=["call_date", "top_recommended_plan_type"])
+            if not _wdf_mix.empty:
+                _asof_mix = min(report_through_date(), pd.to_datetime(_wdf_mix["call_date"].max()).date())
+                _ws_mix = monday_of_week_containing(_asof_mix)
+                st.caption(
+                    "Mon–Sun weeks · **WTD** = share of calls from **Monday of this week through yesterday** "
+                    "(same logic as Arcadia Overview: on Mondays, yesterday is Sunday, so WTD is the full Mon–Sun week just ended) "
+                    "vs **P4WA**: the same mix on **all calls in the four prior full Mon–Sun weeks** (pooled). "
+                    "Ignores date filter · sidebar filters apply. "
+                    f"WTD: {_ws_mix:%b %d}–{_asof_mix:%b %d}."
+                )
+
+            def _wk_mix(fn):
+                return wtd_vs_four_week_pooled(df_nodatefilter, fn)
+
+            trend_cols = st.columns(len(plan_types_all))
+            for i, pt in enumerate(plan_types_all):
+                cur, pool = _wk_mix(lambda d, p=pt: mix_share_pct(d, p))
                 trend_cols[i].metric(
-                    label=f"{pt} — Last Week",
-                    value=f"{this_pct:.1f}%",
-                    delta=delta_str,
-                    help="Computed from the two most recent full ISO weeks, ignoring the date filter.",
+                    label=f"{pt} — Mix (WTD)",
+                    value=fmt_metric_val_pct(cur),
+                    delta=wk_pct_delta_vs_avg(cur, pool),
+                    help=(
+                        "Share of calls with this plan as top recommendation — week-to-date vs pooled four prior Mon–Sun weeks (P4WA). "
+                        "Ignores date filter."
+                    ),
                 )
 
     granularity = st.radio(
@@ -622,10 +317,10 @@ with tab_model:
                 line=dict(width=2),
                 marker=dict(size=5),
             ))
-        apply_dark_theme(fig_mix,
-            yaxis_ticksuffix="%", height=340,
-            margin=dict(l=40, r=20, t=10, b=40),
-            legend=dict(orientation="h", y=-0.2),
+        apply_chart_theme(fig_mix,
+            **PAIR_CHART_LAYOUT,
+            yaxis_ticksuffix="%",
+            legend=dict(**PAIR_LEGEND_BELOW),
         )
         st.plotly_chart(fig_mix, use_container_width=True)
 
@@ -740,11 +435,10 @@ with tab_model:
                     line=dict(width=2),
                     marker=dict(size=5),
                 ))
-            apply_dark_theme(fig_pm,
+            apply_chart_theme(fig_pm,
+                **PAIR_CHART_LAYOUT,
                 yaxis_ticksuffix="%",
-                height=340,
-                margin=dict(l=40, r=20, t=10, b=40),
-                legend=dict(orientation="h", y=-0.25),
+                legend=dict(**PAIR_LEGEND_BELOW),
                 yaxis_title=f"% of calls with product in {pm_slot} slot",
             )
             st.plotly_chart(fig_pm, use_container_width=True)
@@ -767,6 +461,7 @@ with tab_model:
     )
 
     prob_cols_needed = {
+        "call_date",
         "raw_prob_fixed", "raw_prob_tiered", "raw_prob_bundled",
         "expected_points_gap_1_2", "top_recommended_plan_type",
         "classification_bucket", "adhered_call", "order_count",
@@ -775,21 +470,40 @@ with tab_model:
 
     if prob_cols_needed.issubset(df.columns):
 
-        import numpy as np
-
-        COL_MAP = {"Fixed": "raw_prob_fixed", "Tiered": "raw_prob_tiered", "Bundled": "raw_prob_bundled"}
         GAP_LABELS = ["Q1\nLowest", "Q2", "Q3", "Q4", "Q5\nHighest"]
+
+        _wdf_prob = df_nodatefilter
+        _wk_prob = lambda fn: wtd_vs_four_week_pooled(_wdf_prob, fn)
+
+        if "call_date" in _wdf_prob.columns and not _wdf_prob.dropna(subset=["call_date"]).empty:
+            _asof_p = min(report_through_date(), pd.to_datetime(_wdf_prob["call_date"].max()).date())
+            _ws_p = monday_of_week_containing(_asof_p)
+            st.caption(
+                f"WTD ({_ws_p:%b %d}–{_asof_p:%b %d}) vs **P4WA** (four prior full Mon–Sun weeks, pooled) · "
+                "ignores date filter · sidebar filters apply."
+            )
 
         ra_cols = st.columns(4)
         for i, (pt, col) in enumerate([("Fixed", "raw_prob_fixed"), ("Tiered", "raw_prob_tiered"),
                                         ("Bundled", "raw_prob_bundled")]):
-            if col in df.columns:
-                avg_p = df[col].mean() * 100
-                ra_cols[i].metric(f"Avg P(convert) — {pt}", f"{avg_p:.1f}%",
-                                  help=f"Mean raw conversion probability for {pt} across all calls in view")
-        avg_gap = df["expected_points_gap_1_2"].mean()
-        ra_cols[3].metric("Avg Confidence Gap", f"{avg_gap:.2f} pts",
-                          help="Mean expected-points gap between #1 and #2 recommendations — higher = model more certain")
+            if col in _wdf_prob.columns:
+                cur_p, pool_p = _wk_prob(lambda d, c=col: d[c].mean() * 100 if c in d.columns else float("nan"))
+                ra_cols[i].metric(
+                    f"Avg P(convert) — {pt}",
+                    fmt_metric_val_pct(cur_p),
+                    delta=wk_pct_delta_vs_avg(cur_p, pool_p),
+                    help="Mean raw conversion probability — WTD vs P4WA (pooled four prior weeks).",
+                )
+        cur_gap, pool_gap = _wk_prob(
+            lambda d: d["expected_points_gap_1_2"].mean() if "expected_points_gap_1_2" in d.columns else float("nan")
+        )
+        _gap_val = fmt_metric_val_float(cur_gap, 2)
+        ra_cols[3].metric(
+            "Avg Confidence Gap",
+            f"{_gap_val} pts" if _gap_val != "—" else "—",
+            delta=wk_pct_delta_vs_avg(cur_gap, pool_gap),
+            help="Mean expected-points gap #1 vs #2 — WTD vs P4WA.",
+        )
 
         st.markdown("**Raw Probability Distributions**")
         st.caption(
@@ -809,11 +523,10 @@ with tab_model:
                         meanline_visible=True,
                         points=False,
                     ))
-            apply_dark_theme(fig_violin,
+            apply_chart_theme(fig_violin,
+                **PAIR_CHART_LAYOUT,
                 yaxis_title="Raw Conversion Probability",
                 yaxis_tickformat=".0%",
-                height=320,
-                margin=dict(l=40, r=20, t=10, b=40),
                 showlegend=False,
             )
             st.plotly_chart(fig_violin, use_container_width=True)
@@ -824,23 +537,35 @@ with tab_model:
             pct_low  = (gap_vals < p25).mean() * 100
             pct_high = (gap_vals > p75).mean() * 100
             fig_hist = go.Figure()
-            fig_hist.add_trace(go.Histogram(x=gap_vals, nbinsx=40, marker_color="#3d8ef8", opacity=0.8))
-            fig_hist.add_vline(x=float(p25), line_dash="dash", line_color="#4d5669",
+            _hist_stroke, _ = chart_hist_stroke_and_title()
+            fig_hist.add_trace(
+                go.Histogram(
+                    x=gap_vals,
+                    nbinsx=40,
+                    marker_color=PLOT_COLORWAY[0],
+                    marker_line_width=1,
+                    marker_line_color=_hist_stroke,
+                    opacity=0.8,
+                )
+            )
+            fig_hist.add_vline(x=float(p25), line_dash="dash", line_color=chart_hline_reference(),
                                annotation_text=f"25th ({p25:.2f})", annotation_position="top right",
-                               annotation_font_color="#8b95aa")
-            fig_hist.add_vline(x=float(p75), line_dash="dash", line_color="#4d5669",
+                               annotation_font_color=chart_muted())
+            fig_hist.add_vline(x=float(p75), line_dash="dash", line_color=chart_hline_reference(),
                                annotation_text=f"75th ({p75:.2f})", annotation_position="top left",
-                               annotation_font_color="#8b95aa")
-            apply_dark_theme(fig_hist,
+                               annotation_font_color=chart_muted())
+            apply_chart_theme(fig_hist,
+                **PAIR_CHART_LAYOUT,
                 xaxis_title="Expected Points Gap (#1 vs #2)",
                 yaxis_title="Calls",
-                height=320,
-                margin=dict(l=40, r=20, t=10, b=40),
                 showlegend=False,
             )
             st.plotly_chart(fig_hist, use_container_width=True)
-            st.caption(f"**{pct_low:.0f}%** of calls are low-confidence (gap < {p25:.2f} pts) · "
-                       f"**{pct_high:.0f}%** are high-confidence (gap > {p75:.2f} pts)")
+
+        st.caption(
+            f"**{pct_low:.0f}%** of calls are low-confidence (gap < {p25:.2f} pts) · "
+            f"**{pct_high:.0f}%** are high-confidence (gap > {p75:.2f} pts)"
+        )
 
         st.markdown("**Does Model Confidence Predict Outcome? — By Confidence Gap Quintile**")
         st.caption(
@@ -854,6 +579,25 @@ with tab_model:
             df_gap["expected_points_gap_1_2"], q=5,
             labels=GAP_LABELS, duplicates="drop",
         )
+
+        metric_choice = st.radio(
+            "Outcome metric",
+            ["1st Pitch CR", "Overall CR", "GCV / Call"],
+            horizontal=True,
+            key="conf_gap_metric",
+        )
+        col_map2 = {"1st Pitch CR": "gcv_on_first_pitch", "Overall CR": "order_count", "GCV / Call": "gcv"}
+        df_gap2 = df_gap[df_gap["classification_bucket"].isin(["Adherence", "Slide"])].copy()
+        gap_out = None
+        is_dollar = metric_choice == "GCV / Call"
+        if len(df_gap2) > 0:
+            gap_out = (
+                df_gap2.groupby(["gap_bucket", "classification_bucket"], observed=True)
+                .agg(val=(col_map2[metric_choice],
+                      lambda x: x.mean() if metric_choice == "GCV / Call" else (x > 0).mean() * 100),
+                     calls=("gcv", "count"))
+                .reset_index()
+            )
 
         rd1, rd2 = st.columns(2)
 
@@ -873,41 +617,23 @@ with tab_model:
                 y=adh_by_gap["adherence"] * 100,
                 text=(adh_by_gap["adherence"] * 100).round(1).astype(str) + "%",
                 textposition="outside",
-                textfont=dict(color="#8b95aa", size=11),
-                marker_color="#3d8ef8",
+                textfont=bar_outside_textfont(),
+                marker_color=PLOT_COLORWAY[0],
                 marker_line_width=0,
                 customdata=adh_by_gap[["calls", "gap_med"]],
                 hovertemplate="Calls: %{customdata[0]:,}<br>Median gap: %{customdata[1]:.2f}<extra></extra>",
             ))
-            apply_dark_theme(fig_adh_gap,
+            apply_chart_theme(fig_adh_gap,
+                **PAIR_CHART_LAYOUT,
                 xaxis_title="Confidence Gap Quintile",
                 yaxis_title="Adherence Rate",
                 yaxis_ticksuffix="%",
-                height=300,
-                margin=dict(l=40, r=20, t=10, b=50),
                 showlegend=False,
             )
             st.plotly_chart(fig_adh_gap, use_container_width=True)
 
         with rd2:
-            metric_choice = st.radio(
-                "Outcome metric",
-                ["1st Pitch CR", "Overall CR", "GCV / Call"],
-                horizontal=True,
-                key="conf_gap_metric",
-            )
-            col_map2 = {"1st Pitch CR": "gcv_on_first_pitch", "Overall CR": "order_count", "GCV / Call": "gcv"}
-
-            df_gap2 = df_gap[df_gap["classification_bucket"].isin(["Adherence", "Slide"])].copy()
-            if len(df_gap2) > 0:
-                gap_out = (
-                    df_gap2.groupby(["gap_bucket", "classification_bucket"], observed=True)
-                    .agg(val=(col_map2[metric_choice],
-                              lambda x: x.mean() if metric_choice == "GCV / Call" else (x > 0).mean() * 100),
-                         calls=("gcv", "count"))
-                    .reset_index()
-                )
-                is_dollar = metric_choice == "GCV / Call"
+            if gap_out is not None and len(gap_out) > 0:
                 fig_out = go.Figure()
                 for label, dash in [("Adherence", "solid"), ("Slide", "dot")]:
                     sub = gap_out[gap_out["classification_bucket"] == label]
@@ -919,15 +645,16 @@ with tab_model:
                         line=dict(dash=dash, width=2),
                         marker=dict(size=5),
                     ))
-                apply_dark_theme(fig_out,
+                apply_chart_theme(fig_out,
+                    **PAIR_CHART_LAYOUT,
                     xaxis_title="Confidence Gap Quintile",
                     yaxis_tickprefix="$" if is_dollar else "",
                     yaxis_ticksuffix="" if is_dollar else "%",
-                    height=300,
-                    margin=dict(l=40, r=20, t=10, b=50),
-                    legend=dict(orientation="h", y=-0.25),
+                    legend=dict(**PAIR_LEGEND_BELOW),
                 )
                 st.plotly_chart(fig_out, use_container_width=True)
+            else:
+                st.info("No Adherence / Slide calls in view for this outcome chart.")
 
     else:
         missing = prob_cols_needed - set(df.columns)
@@ -942,7 +669,7 @@ with tab_model:
         "(Adherence) versus calls where they pitched the slide product first (Slide)."
     )
 
-    needed = {"classification_bucket", "gcv_on_first_pitch", "order_count", "gcv"}
+    needed = {"call_date", "classification_bucket", "gcv_on_first_pitch", "order_count", "gcv"}
 
     if needed.issubset(df.columns):
         top_df   = df[df["classification_bucket"] == "Adherence"]
@@ -961,13 +688,65 @@ with tab_model:
         top_gcv_fp   = safe_mean(top_df["gcv_on_first_pitch"])
         slide_gcv_fp = safe_mean(slide_df["gcv_on_first_pitch"])
 
+        _wdf_ts = df_nodatefilter
+        _wk_ts = lambda fn: wtd_vs_four_week_pooled(_wdf_ts, fn)
+
+        def _fp_cr_bucket(d, bucket):
+            sub = d[d["classification_bucket"] == bucket]
+            if sub.empty:
+                return float("nan")
+            return (sub["gcv_on_first_pitch"] > 0).mean() * 100
+
+        def _gcv_call_bucket(d, bucket):
+            sub = d[d["classification_bucket"] == bucket]
+            if sub.empty or "gcv" not in sub.columns:
+                return float("nan")
+            return sub["gcv"].mean()
+
+        cur_t_f, p_t_f = _wk_ts(lambda d: _fp_cr_bucket(d, "Adherence"))
+        cur_s_f, p_s_f = _wk_ts(lambda d: _fp_cr_bucket(d, "Slide"))
+        cur_t_g, p_t_g = _wk_ts(lambda d: _gcv_call_bucket(d, "Adherence"))
+        cur_s_g, p_s_g = _wk_ts(lambda d: _gcv_call_bucket(d, "Slide"))
+
+        if "call_date" in _wdf_ts.columns and not _wdf_ts.dropna(subset=["call_date"]).empty:
+            _asof_ts = min(report_through_date(), pd.to_datetime(_wdf_ts["call_date"].max()).date())
+            _ws_ts = monday_of_week_containing(_asof_ts)
+            st.caption(
+                f"**WTD** ({_ws_ts:%b %d}–{_asof_ts:%b %d}) vs **P4WA** on KPI row (pooled four prior Mon–Sun weeks) · "
+                "ignores date filter. Bar charts use the sidebar date range."
+            )
+
         ca1, ca2, ca3, ca4 = st.columns(4)
-        ca1.metric("Top Rec — 1st Pitch CR",  f"{top_fp_cr:.1f}%",
-                   delta=f"{top_fp_cr - slide_fp_cr:+.1f}pp vs Slide")
-        ca2.metric("Slide — 1st Pitch CR",    f"{slide_fp_cr:.1f}%")
-        ca3.metric("Top Rec — GCV / Call",    f"${top_gcv:,.0f}",
-                   delta=f"${top_gcv - slide_gcv:+,.0f} vs Slide")
-        ca4.metric("Slide — GCV / Call",      f"${slide_gcv:,.0f}")
+        ca1.metric(
+            "Top Rec — 1st Pitch CR",
+            fmt_metric_val_pct(cur_t_f),
+            delta=wk_pct_delta_vs_avg(cur_t_f, p_t_f),
+            help=(
+                f"WTD vs P4WA. In current date range: {top_fp_cr:.1f}% vs Slide {slide_fp_cr:.1f}% "
+                f"({top_fp_cr - slide_fp_cr:+.1f}pp)."
+            ),
+        )
+        ca2.metric(
+            "Slide — 1st Pitch CR",
+            fmt_metric_val_pct(cur_s_f),
+            delta=wk_pct_delta_vs_avg(cur_s_f, p_s_f),
+            help=f"In current date range: {slide_fp_cr:.1f}%.",
+        )
+        ca3.metric(
+            "Top Rec — GCV / Call",
+            fmt_metric_val_dollar(cur_t_g),
+            delta=wk_pct_delta_vs_avg(cur_t_g, p_t_g),
+            help=(
+                f"WTD vs P4WA. In current date range: ${top_gcv:,.0f} vs Slide ${slide_gcv:,.0f} "
+                f"(${top_gcv - slide_gcv:+,.0f})."
+            ),
+        )
+        ca4.metric(
+            "Slide — GCV / Call",
+            fmt_metric_val_dollar(cur_s_g),
+            delta=wk_pct_delta_vs_avg(cur_s_g, p_s_g),
+            help=f"In current date range: ${slide_gcv:,.0f}.",
+        )
 
         cb1, cb2 = st.columns(2)
 
@@ -978,47 +757,50 @@ with tab_model:
                 name="Top Rec", x=["1st Pitch CR", "Overall CR"],
                 y=[top_fp_cr, top_cr],
                 text=[f"{top_fp_cr:.1f}%", f"{top_cr:.1f}%"], textposition="outside",
-                textfont=dict(color="#8b95aa", size=11),
-                marker_color="#3d8ef8", marker_line_width=0,
+                textfont=bar_outside_textfont(),
+                marker_color=PLOT_COLORWAY[0], marker_line_width=0,
             ))
             fig_cr.add_trace(go.Bar(
                 name="Slide", x=["1st Pitch CR", "Overall CR"],
                 y=[slide_fp_cr, slide_cr],
                 text=[f"{slide_fp_cr:.1f}%", f"{slide_cr:.1f}%"], textposition="outside",
-                textfont=dict(color="#8b95aa", size=11),
-                marker_color="#22d3c8", marker_line_width=0,
+                textfont=bar_outside_textfont(),
+                marker_color=PLOT_COLORWAY[1], marker_line_width=0,
             ))
-            apply_dark_theme(fig_cr,
-                barmode="group", yaxis_ticksuffix="%", height=300,
-                margin=dict(l=40, r=20, t=10, b=40),
-                legend=dict(orientation="h", y=-0.25),
+            apply_chart_theme(fig_cr,
+                **PAIR_CHART_LAYOUT,
+                barmode="group", yaxis_ticksuffix="%",
+                legend=dict(**PAIR_LEGEND_BELOW),
             )
             st.plotly_chart(fig_cr, use_container_width=True)
 
         with cb2:
             st.markdown("**GCV**")
-            st.caption("GCV / 1st Pitch = total first-pitch GCV ÷ all calls in group (expected value per call)")
             fig_gcv = go.Figure()
             fig_gcv.add_trace(go.Bar(
                 name="Top Rec", x=["GCV / Call", "GCV / 1st Pitch"],
                 y=[top_gcv, top_gcv_fp],
                 text=[f"${top_gcv:,.0f}", f"${top_gcv_fp:,.0f}"], textposition="outside",
-                textfont=dict(color="#8b95aa", size=11),
-                marker_color="#3d8ef8", marker_line_width=0,
+                textfont=bar_outside_textfont(),
+                marker_color=PLOT_COLORWAY[0], marker_line_width=0,
             ))
             fig_gcv.add_trace(go.Bar(
                 name="Slide", x=["GCV / Call", "GCV / 1st Pitch"],
                 y=[slide_gcv, slide_gcv_fp],
                 text=[f"${slide_gcv:,.0f}", f"${slide_gcv_fp:,.0f}"], textposition="outside",
-                textfont=dict(color="#8b95aa", size=11),
-                marker_color="#22d3c8", marker_line_width=0,
+                textfont=bar_outside_textfont(),
+                marker_color=PLOT_COLORWAY[1], marker_line_width=0,
             ))
-            apply_dark_theme(fig_gcv,
-                barmode="group", yaxis_tickprefix="$", height=300,
-                margin=dict(l=40, r=20, t=10, b=40),
-                legend=dict(orientation="h", y=-0.25),
+            apply_chart_theme(fig_gcv,
+                **PAIR_CHART_LAYOUT,
+                barmode="group", yaxis_tickprefix="$",
+                legend=dict(**PAIR_LEGEND_BELOW),
             )
             st.plotly_chart(fig_gcv, use_container_width=True)
+
+        st.caption(
+            "GCV / 1st Pitch = total first-pitch GCV ÷ all calls in group (expected value per call)."
+        )
 
         st.markdown("**Conversion by Plan Type — Top Rec vs. Slide**")
         if "top_recommended_plan_type" in df.columns:
@@ -1093,10 +875,15 @@ with tab_agent:
                     help="Share of calls where this tier was pitched first · last full ISO week · ignores date filter",
                 )
 
+    ah1, ah2 = st.columns(2)
+    with ah1:
+        st.subheader("Adherence Over Time")
+    with ah2:
+        st.subheader("First Pitch Mix Over Time")
+
     col1, col2 = st.columns(2)
 
     with col1:
-        st.subheader("Adherence Over Time")
         if "call_date" in df.columns and "adhered_call" in df.columns:
             ts = (
                 df.dropna(subset=["call_date"])
@@ -1120,17 +907,16 @@ with tab_agent:
                                      mode="lines+markers", line=dict(dash="dot", width=2), marker=dict(size=5)))
             fig.add_trace(go.Scatter(x=ts["period_display"], y=ts["all_plans"], name="All Plans",
                                      mode="lines+markers", line=dict(dash="dash", width=2), marker=dict(size=5)))
-            apply_dark_theme(fig,
-                yaxis_ticksuffix="%", height=320,
-                margin=dict(l=40, r=20, t=20, b=40),
-                legend=dict(orientation="h", y=-0.2),
+            apply_chart_theme(fig,
+                **PAIR_CHART_LAYOUT,
+                yaxis_ticksuffix="%",
+                legend=dict(**PAIR_LEGEND_BELOW),
             )
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("call_date or adhered_call column missing.")
 
     with col2:
-        st.subheader("First Pitch Mix Over Time")
         if "call_date" in df.columns and "first_pitch_type" in df.columns:
             pitch_ts = (
                 df.dropna(subset=["call_date", "first_pitch_type"])
@@ -1151,10 +937,10 @@ with tab_agent:
                     continue
                 fig2.add_trace(go.Scatter(x=sub["period_display"], y=sub["pct"], name=pt,
                                           mode="lines+markers", line=dict(width=2), marker=dict(size=5)))
-            apply_dark_theme(fig2,
-                yaxis_ticksuffix="%", height=320,
-                margin=dict(l=40, r=20, t=20, b=40),
-                legend=dict(orientation="h", y=-0.2),
+            apply_chart_theme(fig2,
+                **PAIR_CHART_LAYOUT,
+                yaxis_ticksuffix="%",
+                legend=dict(**PAIR_LEGEND_BELOW),
             )
             st.plotly_chart(fig2, use_container_width=True)
         else:
@@ -1220,16 +1006,15 @@ with tab_agent:
                 y=pot_ts["value"],
                 mode="lines+markers",
                 name=pot_metric,
-                line=dict(color="#3d8ef8", width=2),
-                marker=dict(size=5, color="#3d8ef8"),
+                line=dict(color=PLOT_COLORWAY[0], width=2),
+                marker=dict(size=5, color=PLOT_COLORWAY[0]),
                 fill="tozeroy",
-                fillcolor="rgba(61,142,248,0.06)",
+                fillcolor=area_fill_primary(),
             ))
-            apply_dark_theme(fig_pot,
+            apply_chart_theme(fig_pot,
+                **PAIR_CHART_LAYOUT,
                 yaxis_tickprefix="$" if is_dollar else "",
                 yaxis_ticksuffix="" if is_dollar else "%",
-                height=320,
-                margin=dict(l=40, r=20, t=10, b=40),
                 showlegend=False,
             )
             st.plotly_chart(fig_pot, use_container_width=True)
@@ -1415,11 +1200,7 @@ with tab_agent:
                         num = float(val.replace("%", "").replace("+", ""))
                     except Exception:
                         return ""
-                    if abs(num) < 3:
-                        return "background-color: #2a2a1a; color: #c8a000"
-                    if num > 0:
-                        return "background-color: #0f2a1a; color: #22c55e"
-                    return "background-color: #2a1018; color: #f43f5e"
+                    return theme.period_comparison_delta_style(num, neutral_abs=3.0)
 
                 BEH_ORDER = ["Adhered", "Slide", "All Plans"]
                 rec_types = sorted(merged["rec_type"].unique())
@@ -1617,34 +1398,30 @@ with tab_agent:
             z_counts.append(z_row)
             text_cells.append(t_row)
 
+        _ax_lines = plotly_axis_lines()
+        _lc = _ax_lines["linecolor"]
         fig_cm = go.Figure(go.Heatmap(
             z=z_counts,
             x=COL_LABELS,
             y=ROW_LABELS,
             text=text_cells,
             texttemplate="%{text}",
-            colorscale=[[0, "#0d1520"], [0.5, "#1a3a6e"], [1.0, "#3d8ef8"]],
-            colorbar=dict(
-                title="Calls",
-                title_font=dict(color="#8b95aa", size=11),
-                tickfont=dict(color="#8b95aa", size=10),
-                bgcolor="rgba(0,0,0,0)",
-                bordercolor="#252b3a",
-            ),
+            colorscale=heatmap_colorscale(),
+            colorbar=heatmap_colorbar_dict(),
             hoverongaps=False,
         ))
-        apply_dark_theme(fig_cm,
+        apply_chart_theme(fig_cm,
             xaxis=dict(
                 title="Recommended plan type",
                 side="bottom",
                 gridcolor="rgba(0,0,0,0)",
-                linecolor="#252b3a",
+                linecolor=_lc,
             ),
             yaxis=dict(
                 title="First pitch (canonical rec match → plan type)",
                 autorange="reversed",
                 gridcolor="rgba(0,0,0,0)",
-                linecolor="#252b3a",
+                linecolor=_lc,
             ),
             height=460,
             margin=dict(l=100, r=40, t=20, b=80),
@@ -1737,35 +1514,35 @@ with tab_agent_level:
         sc3.metric("Avg 1st Pitch CR", f"{agent_df['1st Pitch CR'].mean():.1f}%")
         sc4.metric("Avg GCV / Call", f"${agent_df['GCV / Call'].mean():,.0f}")
 
+        dht1, dht2 = st.columns(2)
+        dht1.markdown("**Diamond % Distribution**")
+        dht2.markdown("**GCV / Call Distribution**")
+
         dc1, dc2 = st.columns(2)
 
         with dc1:
-            st.markdown("**Diamond % Distribution**")
             fig_d = go.Figure(go.Histogram(
                 x=agent_df["Diamond %"], nbinsx=20,
-                marker_color="#3d8ef8", opacity=0.8,
-                marker_line_color="#252b3a", marker_line_width=1,
+                marker_color=PLOT_COLORWAY[0], opacity=0.8,
+                marker_line_color=histogram_marker_line(), marker_line_width=1,
             ))
-            apply_dark_theme(fig_d,
+            apply_chart_theme(fig_d,
+                **PAIR_CHART_LAYOUT,
                 xaxis_title="Diamond First-Pitch Rate (%)",
                 yaxis_title="Agents",
-                height=240,
-                margin=dict(l=40, r=20, t=10, b=40),
             )
             st.plotly_chart(fig_d, use_container_width=True)
 
         with dc2:
-            st.markdown("**GCV / Call Distribution**")
             fig_g = go.Figure(go.Histogram(
                 x=agent_df["GCV / Call"].dropna(), nbinsx=20,
-                marker_color="#22d3c8", opacity=0.8,
-                marker_line_color="#252b3a", marker_line_width=1,
+                marker_color=PLOT_COLORWAY[1], opacity=0.8,
+                marker_line_color=histogram_marker_line(), marker_line_width=1,
             ))
-            apply_dark_theme(fig_g,
+            apply_chart_theme(fig_g,
+                **PAIR_CHART_LAYOUT,
                 xaxis_title="GCV / Call ($)",
                 yaxis_title="Agents",
-                height=240,
-                margin=dict(l=40, r=20, t=10, b=40),
             )
             st.plotly_chart(fig_g, use_container_width=True)
 
