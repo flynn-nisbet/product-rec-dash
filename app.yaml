@@ -2,3 +2,7 @@ command:
   - streamlit
   - run
   - app.py
+
+env:
+  - name: DATA_DIR
+    value: "/Workspace/Users/fnisbet@redventures.com/product-rec-dash/data"
