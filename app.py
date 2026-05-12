@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import os
+import glob
 import plotly.graph_objects as go
 from datetime import date, timedelta
 
@@ -33,8 +34,20 @@ from charts import (
 
 @st.cache_data(ttl="24h")
 def load_data():
-    data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "call_level_data.csv")
-    return pd.read_csv(data_path)
+    """Load call-level rows from ``data/call_level_data_*.csv`` shards (union), or legacy ``call_level_data.csv``."""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    data_dir = os.path.join(base_dir, "data")
+    pattern = os.path.join(data_dir, "call_level_data_*.csv")
+    paths = sorted(glob.glob(pattern))
+    if paths:
+        parts = [pd.read_csv(p) for p in paths]
+        return pd.concat(parts, ignore_index=True)
+    legacy = os.path.join(base_dir, "call_level_data.csv")
+    if os.path.isfile(legacy):
+        return pd.read_csv(legacy)
+    raise FileNotFoundError(
+        f"No call-level data: expected sharded CSVs matching {pattern!r}, or {legacy!r}."
+    )
 
 df_raw = load_data()
 df_raw["call_date"] = pd.to_datetime(df_raw["call_date"])
