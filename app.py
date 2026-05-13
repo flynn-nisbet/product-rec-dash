@@ -4,6 +4,12 @@ import os
 import glob
 import plotly.graph_objects as go
 from datetime import date, timedelta
+from openai import OpenAI as _OpenAI
+from dotenv import load_dotenv
+import traceback as _tb
+import json as _json
+
+load_dotenv()
 
 st.set_page_config(
     page_title="Product Rank Dash",
@@ -240,6 +246,65 @@ def mix_share_pct(slice_df: pd.DataFrame, plan_type: str) -> float:
     return (slice_df["top_recommended_plan_type"] == plan_type).mean() * 100
 
 
+def prepare_agent_behavior_dataframe(d: pd.DataFrame, adherence_mode: str):
+    """Build agent-tab frame with ``agent_tier_display`` and column spec for adherence / bucket.
+
+    Returns ``(frame, spec, effective_mode)``. If ``Sale`` is requested but required columns
+    are missing, falls back to first-pitch columns and ``effective_mode == "First Pitch"``.
+    """
+    out = d.copy()
+    base_spec = {
+        "adh": "adhered_call",
+        "slide": "slide_call",
+        "ap": "all_plans_call",
+        "cls": "classification_bucket",
+    }
+    sale_needed = {
+        "sale_type", "order_count", "has_top_rec_pitch_view",
+        "has_slide_recs_pitch_view", "has_all_plans_pitch_view",
+    }
+    if adherence_mode != "Sale" or not sale_needed.issubset(out.columns):
+        if "first_pitch_type" in out.columns:
+            out["agent_tier_display"] = out["first_pitch_type"]
+        else:
+            out["agent_tier_display"] = pd.NA
+        eff = "First Pitch" if adherence_mode == "Sale" else adherence_mode
+        return out, base_spec, eff
+
+    ord_pos = out["order_count"].fillna(0) > 0
+    stype = out["sale_type"]
+    has_top = out["has_top_rec_pitch_view"].fillna(False).astype(bool)
+    has_slide = out["has_slide_recs_pitch_view"].fillna(False).astype(bool)
+    has_all = out["has_all_plans_pitch_view"].fillna(False).astype(bool)
+
+    sale_adhered = (ord_pos & (stype == "Diamond") & has_top).astype("float64")
+    sale_slide = (ord_pos & (stype == "Gold") & has_slide).astype("float64")
+    sale_all = (has_all & (sale_adhered < 1) & (sale_slide < 1)).astype("float64")
+
+    out["sale_adhered_call"] = sale_adhered
+    out["sale_slide_call"] = sale_slide
+    out["sale_all_plans_call"] = sale_all
+
+    out["sale_classification_bucket"] = "Unclassified"
+    out.loc[sale_adhered >= 1, "sale_classification_bucket"] = "Adherence"
+    out.loc[(sale_slide >= 1) & (sale_adhered < 1), "sale_classification_bucket"] = "Slide"
+    out.loc[(sale_all >= 1) & (sale_adhered < 1) & (sale_slide < 1), "sale_classification_bucket"] = "All Plans"
+
+    # Tier mix / tier filters: only defined on converting calls (non-sales stay NA).
+    out["agent_tier_display"] = pd.NA
+    m_ord = ord_pos & stype.notna()
+    out.loc[m_ord, "agent_tier_display"] = stype.loc[m_ord].astype(str)
+    out.loc[ord_pos & ~stype.notna(), "agent_tier_display"] = "Unknown"
+
+    sale_spec = {
+        "adh": "sale_adhered_call",
+        "slide": "sale_slide_call",
+        "ap": "sale_all_plans_call",
+        "cls": "sale_classification_bucket",
+    }
+    return out, sale_spec, "Sale"
+
+
 # Plotly: side-by-side charts share height + margins so x-axes line up at the same baseline.
 PAIR_CHART_HEIGHT = 400
 PAIR_CHART_MARGIN = dict(l=52, r=24, t=56, b=104)
@@ -255,7 +320,7 @@ st.title("📊 Product Rank Dash")
 st.caption(f"{date_str}  ·  {len(df):,} calls in view")
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_model, tab_agent, tab_agent_level = st.tabs(["Model Outputs", "Agent Behavior & Performance", "Agent Level"])
+tab_model, tab_agent, tab_agent_level, tab_chat = st.tabs(["Model Outputs", "Agent Behavior & Performance", "Agent Level", "AI Analyst"])
 
 # ════════════════════════════════════════════════════════════════════════════════
 # TAB 1 — MODEL OUTPUTS
@@ -853,16 +918,37 @@ with tab_model:
 # ════════════════════════════════════════════════════════════════════════════════
 with tab_agent:
 
-    agent_granularity = st.radio(
-        "Granularity",
-        PERIOD_OPTIONS,
-        index=0,  # Daily default
-        horizontal=True,
-        key="agent_granularity",
-    )
+    ctrl_adh, ctrl_gran = st.columns(2)
+    with ctrl_adh:
+        agent_adherence_type = st.radio(
+            "Adherence type",
+            ["First Pitch", "Sale"],
+            index=0,
+            horizontal=True,
+            key="agent_adherence_type",
+        )
+    with ctrl_gran:
+        agent_granularity = st.radio(
+            "Granularity",
+            PERIOD_OPTIONS,
+            index=0,  # Daily default
+            horizontal=True,
+            key="agent_granularity",
+        )
 
-    if "first_pitch_type" in df_nodatefilter.columns and "call_date" in df_nodatefilter.columns:
-        tmp_fp = df_nodatefilter.dropna(subset=["call_date", "first_pitch_type"]).copy()
+    df_agent, colspec, agent_eff_mode = prepare_agent_behavior_dataframe(df, agent_adherence_type)
+    df_nodate_agent, _, _ = prepare_agent_behavior_dataframe(df_nodatefilter, agent_adherence_type)
+
+    if agent_adherence_type == "Sale" and agent_eff_mode != "Sale":
+        st.warning(
+            "Sale-based adherence needs `sale_type`, `order_count`, and top/slide/all-plans pitch-view flags "
+            "on the call-level file. Showing first-pitch adherence instead."
+        )
+
+    adh_c, sl_c, ap_c, cls_c = colspec["adh"], colspec["slide"], colspec["ap"], colspec["cls"]
+
+    if "call_date" in df_nodate_agent.columns and "agent_tier_display" in df_nodate_agent.columns:
+        tmp_fp = df_nodate_agent.dropna(subset=["call_date"]).copy()
         tmp_fp["week"] = tmp_fp["call_date"].dt.to_period("W")
         fp_weeks = sorted(tmp_fp["week"].unique())
         fp_m1, fp_m2 = (fp_weeks[-1] if len(fp_weeks) >= 1 else None,
@@ -872,8 +958,13 @@ with tab_agent:
             if week_period is None:
                 return None
             sub = tmp_fp[tmp_fp["week"] == week_period]
-            return (sub["first_pitch_type"] == tier).mean() * 100 if len(sub) else None
+            if agent_eff_mode == "Sale" and "order_count" in sub.columns:
+                sub = sub[sub["order_count"].fillna(0) > 0]
+            if len(sub) == 0:
+                return None
+            return (sub["agent_tier_display"] == tier).mean() * 100
 
+        tier_lbl = "Sale tier" if agent_eff_mode == "Sale" else "FP"
         fp_cols = st.columns(4)
         for i, tier in enumerate(["Diamond", "Gold", "Silver", "Bronze"]):
             this_v = fp_rate(fp_m1, tier)
@@ -881,31 +972,44 @@ with tab_agent:
             if this_v is not None:
                 delta_str = (f"{this_v - prev_v:+.1f}pp vs prior week"
                              if prev_v is not None else None)
+                _help = (
+                    "Among **converting calls** in the week, share whose sold-pitch tier was this slot "
+                    "(`sale_type` in the pipeline) · last ISO week · ignores date filter"
+                    if agent_eff_mode == "Sale"
+                    else "Share of calls where this tier was pitched first · last full ISO week · ignores date filter"
+                )
                 fp_cols[i].metric(
-                    label=f"{tier} FP Rate",
+                    label=f"{tier} {tier_lbl} rate",
                     value=f"{this_v:.1f}%",
                     delta=delta_str,
-                    help="Share of calls where this tier was pitched first · last full ISO week · ignores date filter",
+                    help=_help,
                 )
 
     ah1, ah2 = st.columns(2)
     with ah1:
         st.subheader("Adherence Over Time")
     with ah2:
-        st.subheader("First Pitch Mix Over Time")
+        st.subheader(
+            "Sale tier mix over time (among sales)"
+            if agent_eff_mode == "Sale"
+            else "First pitch mix over time"
+        )
 
     col1, col2 = st.columns(2)
 
     with col1:
-        if "call_date" in df.columns and "adhered_call" in df.columns:
+        if "call_date" in df_agent.columns and adh_c in df_agent.columns:
+            _adh_ts_base = df_agent.dropna(subset=["call_date"])
+            if agent_eff_mode == "Sale" and "order_count" in _adh_ts_base.columns:
+                _adh_ts_base = _adh_ts_base[_adh_ts_base["order_count"].fillna(0) > 0]
             ts = (
-                df.dropna(subset=["call_date"])
-                .assign(period=period_labels(df["call_date"], agent_granularity))
+                _adh_ts_base
+                .assign(period=period_labels(_adh_ts_base["call_date"], agent_granularity))
                 .groupby("period")
                 .agg(
-                    adherence=("adhered_call", "mean"),
-                    slide=("slide_call", "mean"),
-                    all_plans=("all_plans_call", "mean"),
+                    adherence=(adh_c, "mean"),
+                    slide=(sl_c, "mean"),
+                    all_plans=(ap_c, "mean"),
                 )
                 .reset_index()
                 .sort_values("period")
@@ -926,15 +1030,26 @@ with tab_agent:
                 legend=dict(**PAIR_LEGEND_BELOW),
             )
             st.plotly_chart(fig, use_container_width=True)
+            if agent_eff_mode == "Sale":
+                st.caption("Adherence, slide, and all-plans rates are **among converting calls only** (each line is % of sales).")
         else:
-            st.info("call_date or adhered_call column missing.")
+            st.info("call_date or adherence columns missing.")
 
     with col2:
-        if "call_date" in df.columns and "first_pitch_type" in df.columns:
+        if "call_date" in df_agent.columns and "agent_tier_display" in df_agent.columns:
+            tier_order = (
+                ["Diamond", "Gold", "Silver", "Bronze", "Unknown"]
+                if agent_eff_mode == "Sale"
+                else ["Diamond", "Gold", "Silver", "Bronze"]
+            )
+            _mix_base = df_agent.dropna(subset=["call_date"])
+            if agent_eff_mode == "Sale" and "order_count" in _mix_base.columns:
+                _mix_base = _mix_base[_mix_base["order_count"].fillna(0) > 0]
+            _mix_base = _mix_base.dropna(subset=["agent_tier_display"])
             pitch_ts = (
-                df.dropna(subset=["call_date", "first_pitch_type"])
-                .assign(period=period_labels(df["call_date"], agent_granularity))
-                .groupby(["period", "first_pitch_type"])
+                _mix_base
+                .assign(period=period_labels(_mix_base["call_date"], agent_granularity))
+                .groupby(["period", "agent_tier_display"])
                 .size()
                 .reset_index(name="n")
                 .sort_values("period")
@@ -944,8 +1059,8 @@ with tab_agent:
             pitch_ts["pct"] = pitch_ts["n"] / totals * 100
 
             fig2 = go.Figure()
-            for pt in ["Diamond", "Gold", "Silver", "Bronze"]:
-                sub = pitch_ts[pitch_ts["first_pitch_type"] == pt]
+            for pt in tier_order:
+                sub = pitch_ts[pitch_ts["agent_tier_display"] == pt]
                 if sub.empty:
                     continue
                 fig2.add_trace(go.Scatter(x=sub["period_display"], y=sub["pct"], name=pt,
@@ -956,8 +1071,13 @@ with tab_agent:
                 legend=dict(**PAIR_LEGEND_BELOW),
             )
             st.plotly_chart(fig2, use_container_width=True)
+            if agent_eff_mode == "Sale":
+                st.caption(
+                    "Each period sums to **100%** over converting calls with a known sold-pitch tier "
+                    "(Unknown = order present but `sale_type` missing)."
+                )
         else:
-            st.info("call_date or first_pitch_type column missing.")
+            st.info("call_date or tier display column missing.")
 
     st.divider()
 
@@ -974,16 +1094,16 @@ with tab_agent:
     with pot_c2:
         fp_type_opts = ["All"] + ["Diamond", "Gold", "Silver", "Bronze"]
         pot_fp_filter = st.selectbox(
-            "First Pitch Type",
+            "Sale tier" if agent_eff_mode == "Sale" else "First pitch type",
             fp_type_opts,
             key="pot_fp_filter",
         )
 
-    if "call_date" in df.columns:
-        pot_df = df.dropna(subset=["call_date"]).copy()
+    if "call_date" in df_agent.columns:
+        pot_df = df_agent.dropna(subset=["call_date"]).copy()
 
-        if pot_fp_filter != "All" and "first_pitch_type" in pot_df.columns:
-            pot_df = pot_df[pot_df["first_pitch_type"] == pot_fp_filter]
+        if pot_fp_filter != "All" and "agent_tier_display" in pot_df.columns:
+            pot_df = pot_df[pot_df["agent_tier_display"] == pot_fp_filter]
 
         pot_df["period"] = period_labels(pot_df["call_date"], agent_granularity)
 
@@ -1045,13 +1165,18 @@ with tab_agent:
         "Delta cells are colored green (improvement) or red (decline)."
     )
 
-    needed_cols = {
-        "call_date", "top_recommended_plan_type", "classification_bucket",
-        "adhered_call", "slide_call", "all_plans_call",
+    _pop_core = {
+        "call_date", "top_recommended_plan_type",
         "gcv_on_first_pitch", "order_count", "gcv",
     }
+    _pop_fp = {"classification_bucket", "adhered_call", "slide_call", "all_plans_call"}
+    _pop_sale = {
+        "sale_type", "order_count", "has_top_rec_pitch_view",
+        "has_slide_recs_pitch_view", "has_all_plans_pitch_view",
+    }
+    _pop_needed = _pop_core | (_pop_sale if agent_eff_mode == "Sale" else _pop_fp)
 
-    if needed_cols.issubset(df_raw.columns):
+    if _pop_needed.issubset(df_raw.columns):
 
         raw_min = pd.to_datetime(df_raw["call_date"].min()).date()
         raw_max = pd.to_datetime(df_raw["call_date"].max()).date()
@@ -1093,8 +1218,8 @@ with tab_agent:
                     (base["call_date"].dt.date <= end)
                 ]
 
-            pre_df  = slice_period(df_nodatefilter, pre_range[0],  pre_range[1])
-            post_df = slice_period(df_nodatefilter, post_range[0], post_range[1])
+            pre_df  = slice_period(df_nodate_agent, pre_range[0],  pre_range[1])
+            post_df = slice_period(df_nodate_agent, post_range[0], post_range[1])
 
             def overall_metric(source, metric):
                 if len(source) == 0:
@@ -1137,15 +1262,15 @@ with tab_agent:
                 rec_totals = (
                     source.dropna(subset=["top_recommended_plan_type"])
                     .groupby("top_recommended_plan_type")
-                    ["call_id"].count()
+                    .size()
                     .rename("rec_total")
                 )
 
                 rows = []
                 for rec_type, behavior, mask_col in [
-                    ("top_recommended_plan_type", "Adhered",   "adhered_call"),
-                    ("top_recommended_plan_type", "Slide",     "slide_call"),
-                    ("top_recommended_plan_type", "All Plans", "all_plans_call"),
+                    ("top_recommended_plan_type", "Adhered",   adh_c),
+                    ("top_recommended_plan_type", "Slide",     sl_c),
+                    ("top_recommended_plan_type", "All Plans", ap_c),
                 ]:
                     grp = (
                         source.dropna(subset=["top_recommended_plan_type"])
@@ -1260,9 +1385,9 @@ with tab_agent:
                     total_calls = len(source)
                     rows = []
                     for behavior, mask_col in [
-                        ("Adhered",   "adhered_call"),
-                        ("Slide",     "slide_call"),
-                        ("All Plans", "all_plans_call"),
+                        ("Adhered",   adh_c),
+                        ("Slide",     sl_c),
+                        ("All Plans", ap_c),
                     ]:
                         sub = source[source[mask_col] == 1] if mask_col in source.columns else source.iloc[0:0]
                         n_sub = len(sub)
@@ -1314,37 +1439,49 @@ with tab_agent:
             else:
                 st.info("Not enough data in selected date ranges to compute metrics.")
     else:
-        missing = needed_cols - set(df_raw.columns)
-        st.info(f"Columns missing for comparison table: {', '.join(sorted(missing))}")
+        missing = sorted(_pop_needed - set(df_raw.columns))
+        st.info(f"Columns missing for comparison table: {', '.join(missing)}")
 
     st.divider()
 
     # ── Confusion Matrix ──────────────────────────────────────────────────────
-    st.subheader("Confusion Matrix — First Pitch vs. Recommended Plan Type")
-    st.caption(
-        "Rows: plan type of the rec slot the agent pitched first. "
-        "Columns: top recommended plan type. "
-        "Diagonal cells = agent pitched a rec of the same plan type as the top rec. "
-        "Other row = first pitch was outside all rec slots (Silver / Bronze tier)."
-    )
+    if agent_eff_mode == "Sale":
+        st.subheader("Confusion matrix — sold plan vs. recommended plan type")
+        st.caption(
+            "Converting calls only. Rows: plan type from the **sold** pitch (tier `sale_type` and plan category "
+            "of the converting pitch, using the same rec-slot mapping as the first-pitch matrix). "
+            "Columns: top recommended plan type."
+        )
+        cm_needed = {
+            "sale_type", "top_recommended_plan_type", "recommended_plan_types_in_order",
+            "order_count", "gcv", 
+        }
+        _cm_use_sale = True
+    else:
+        st.subheader("Confusion matrix — first pitch vs. recommended plan type")
+        st.caption(
+            "Rows: plan type of the rec slot the agent pitched first. "
+            "Columns: top recommended plan type. "
+            "Diagonal cells = agent pitched a rec of the same plan type as the top rec. "
+            "Other row = first pitch was outside all rec slots (Silver / Bronze tier)."
+        )
+        cm_needed = {
+            "first_pitch_type", "first_pitch_plan_category",
+            "top_recommended_plan_type", "recommended_plan_types_in_order",
+            "order_count", "gcv",
+        }
+        _cm_use_sale = False
 
-    cm_needed = {
-        "first_pitch_type", "first_pitch_plan_category",
-        "top_recommended_plan_type", "recommended_plan_types_in_order",
-        "order_count", "gcv",
-    }
-
-    if cm_needed.issubset(df.columns):
-        import ast as _ast
+    if cm_needed.issubset(df_agent.columns):
         import re as _re
 
         def norm_plan_type(x):
             if not isinstance(x, str):
                 return None
             x = x.strip()
-            if _re.search(r'\bFixed\b',   x, _re.IGNORECASE): return "Fixed"
-            if _re.search(r'\bTiered\b',  x, _re.IGNORECASE): return "Tiered"
-            if _re.search(r'\bBundled\b', x, _re.IGNORECASE): return "Bundled"
+            if _re.search(r"\bFixed\b",   x, _re.IGNORECASE): return "Fixed"
+            if _re.search(r"\bTiered\b",  x, _re.IGNORECASE): return "Tiered"
+            if _re.search(r"\bBundled\b", x, _re.IGNORECASE): return "Bundled"
             return None
 
         def safe_parse_list(v):
@@ -1353,15 +1490,21 @@ with tab_agent:
             if not isinstance(v, str) or v.strip() in ("", "None", "nan", "null", "[]"):
                 return []
             import re
-            return re.findall(r'\b(Fixed|Tiered|Bundled)\b', v)
+            return re.findall(r"\b(Fixed|Tiered|Bundled)\b", v)
 
-        cm_df = df.dropna(subset=["first_pitch_type", "top_recommended_plan_type"]).copy()
+        cm_df = df_agent.dropna(subset=["top_recommended_plan_type"]).copy()
         cm_df = cm_df[~cm_df["recommended_plan_types_in_order"].astype(str).isin(
             ["", "None", "nan", "null", "[]"]
         )]
         cm_df["_rec_types"] = cm_df["recommended_plan_types_in_order"].apply(safe_parse_list)
 
-        def get_row_col(row):
+        if _cm_use_sale:
+            cm_df = cm_df[cm_df["order_count"].fillna(0) > 0]
+            cm_df = cm_df.dropna(subset=["sale_type"])
+        else:
+            cm_df = cm_df.dropna(subset=["first_pitch_type"])
+
+        def get_row_col_fp(row):
             fpt       = row["first_pitch_type"]
             fp_ptype  = norm_plan_type(row.get("first_pitch_plan_category"))
             top_ptype = norm_plan_type(row.get("top_recommended_plan_type"))
@@ -1380,7 +1523,27 @@ with tab_agent:
                 col_label = top_ptype
             return pd.Series({"row_label": row_label, "col_label": col_label})
 
-        cm_df[["row_label", "col_label"]] = cm_df.apply(get_row_col, axis=1)
+        def get_row_col_sale(row):
+            st_val    = row["sale_type"]
+            top_ptype = norm_plan_type(row.get("top_recommended_plan_type"))
+            rec_types = [norm_plan_type(t) for t in row["_rec_types"]]
+
+            if st_val == "Diamond":
+                row_label = rec_types[0] if rec_types else None
+                col_label = top_ptype
+            elif st_val == "Gold":
+                slide_types = rec_types[1:] if len(rec_types) > 1 else []
+                row_label = slide_types[0] if slide_types else None
+                col_label = top_ptype
+            else:
+                row_label = "Other"
+                col_label = top_ptype
+            return pd.Series({"row_label": row_label, "col_label": col_label})
+
+        if _cm_use_sale:
+            cm_df[["row_label", "col_label"]] = cm_df.apply(get_row_col_sale, axis=1)
+        else:
+            cm_df[["row_label", "col_label"]] = cm_df.apply(get_row_col_fp, axis=1)
         cm_df = cm_df[cm_df["row_label"].notna() & cm_df["col_label"].notna()]
         total_calls = len(cm_df)
 
@@ -1423,6 +1586,11 @@ with tab_agent:
             colorbar=heatmap_colorbar_dict(),
             hoverongaps=False,
         ))
+        _y_cm_title = (
+            "Sold pitch (canonical rec match → plan type)"
+            if _cm_use_sale
+            else "First pitch (canonical rec match → plan type)"
+        )
         apply_chart_theme(fig_cm,
             xaxis=dict(
                 title="Recommended plan type",
@@ -1431,7 +1599,7 @@ with tab_agent:
                 linecolor=_lc,
             ),
             yaxis=dict(
-                title="First pitch (canonical rec match → plan type)",
+                title=_y_cm_title,
                 autorange="reversed",
                 gridcolor="rgba(0,0,0,0)",
                 linecolor=_lc,
@@ -1440,13 +1608,21 @@ with tab_agent:
             margin=dict(l=100, r=40, t=20, b=80),
         )
         st.plotly_chart(fig_cm, use_container_width=True)
-        st.caption(f"Total calls in view: {total_calls:,}  ·  "
-                   f"Diamond: {(cm_df['first_pitch_type']=='Diamond').sum():,}  ·  "
-                   f"Gold: {(cm_df['first_pitch_type']=='Gold').sum():,}  ·  "
-                   f"Other (Silver/Bronze): {cm_df['row_label'].eq('Other').sum():,}")
+        if _cm_use_sale:
+            d_ct = int((cm_df["sale_type"] == "Diamond").sum())
+            g_ct = int((cm_df["sale_type"] == "Gold").sum())
+        else:
+            d_ct = int((cm_df["first_pitch_type"] == "Diamond").sum())
+            g_ct = int((cm_df["first_pitch_type"] == "Gold").sum())
+        st.caption(
+            f"Calls in matrix: {total_calls:,}  ·  "
+            f"Diamond: {d_ct:,}  ·  "
+            f"Gold: {g_ct:,}  ·  "
+            f"Other (Silver/Bronze / off-rec): {int(cm_df['row_label'].eq('Other').sum()):,}"
+        )
     else:
-        missing = cm_needed - set(df.columns)
-        st.info(f"Columns missing for confusion matrix: {', '.join(sorted(missing))}")
+        missing = sorted(cm_needed - set(df_agent.columns))
+        st.info(f"Columns missing for confusion matrix: {', '.join(missing)}")
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -1572,3 +1748,831 @@ with tab_agent_level:
     else:
         missing = agent_needed - set(df.columns)
         st.info(f"Columns missing for agent table: {', '.join(sorted(missing))}")
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 4 — AI ANALYST
+# ════════════════════════════════════════════════════════════════════════════════
+with tab_chat:
+
+    def build_schema_context(d: pd.DataFrame) -> str:
+        lines = [
+            "═══ DATA SCOPE ═══",
+            f"df (filtered):         {d.shape[0]:,} rows × {d.shape[1]} columns",
+            f"df_nodatefilter:       {df_nodatefilter.shape[0]:,} rows (sidebar filters, no date window)",
+            f"df_raw:                {df_raw.shape[0]:,} rows (fully unfiltered)",
+        ]
+
+        if "call_date" in d.columns and d["call_date"].notna().any():
+            lines.append(f"Filtered date range:   {d['call_date'].min().date()} – {d['call_date'].max().date()}")
+        if "call_date" in df_raw.columns and df_raw["call_date"].notna().any():
+            lines.append(f"Raw date range:        {df_raw['call_date'].min().date()} – {df_raw['call_date'].max().date()}")
+
+        lines.append("\n═══ KEY COLUMN VALUES (filtered df) ═══")
+        key_cats = [
+            "center_location", "top_recommended_plan_type", "classification_bucket",
+            "first_pitch_type", "sale_type", "mover_switcher", "marketing_bucket",
+        ]
+        for col in key_cats:
+            if col in d.columns:
+                vc = d[col].value_counts(dropna=False)
+                vals = "  |  ".join(f"{k}: {v:,}" for k, v in vc.items())
+                lines.append(f"  {col}: {vals}")
+
+        lines.append("\n═══ ALL COLUMNS (name | dtype | sample) ═══")
+        for col in d.columns:
+            sample = d[col].dropna().iloc[0] if d[col].notna().any() else "null"
+            lines.append(f"  {col:45s} | {str(d[col].dtype):10s} | e.g. {sample}")
+
+        return "\n".join(lines)
+
+    TOOLS = [
+        {
+            "type": "function",
+            "function": {
+                "name": "execute_python",
+                "description": (
+                    "Execute Python against `df`. Assign final output to `result`. "
+                    "Never call print(). pandas=pd, numpy=np, plotly=go/px available."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "code":      {"type": "string", "description": "Python code assigning to `result`."},
+                        "rationale": {"type": "string", "description": "One sentence: what and why."},
+                        "is_final":  {
+                            "type": "boolean",
+                            "description": (
+                                "Set true ONLY on the last tool call before your final answer. "
+                                "When true, your code must produce the single authoritative result "
+                                "your narrative will be based on. You may NOT reference numbers from "
+                                "earlier steps in your final answer — only from this result."
+                            ),
+                        },
+                    },
+                    "required": ["code", "rationale", "is_final"],
+                },
+            },
+        }
+    ]
+
+    SYSTEM_PROMPT = """You are an autonomous data analyst agent embedded in a call-center sales performance dashboard for an energy retail company. Agents take inbound calls and pitch electricity plans to customers. A machine learning model recommends which plans to pitch on each call.
+
+You have one tool: `execute_python`. Use it as many times as needed to fully answer the user's question.
+
+Workflow:
+1. Think about what data you need and plan your approach.
+2. Call execute_python to explore, filter, aggregate, or compute.
+3. Read the result. Decide if you need another computation to go deeper or validate.
+4. Repeat steps 2-3 as needed.
+5. On your LAST tool call, set is_final=true. That result is the ONLY source your narrative may reference.
+6. Write a clear, structured final answer using only values from the is_final result.
+   - Use markdown tables for comparisons.
+   - Highlight the most important findings first.
+   - Use specific numbers (percentages to 1dp, dollars with commas).
+
+═══════════════════════════════════════════════
+DOMAIN KNOWLEDGE — read this carefully before computing anything
+═══════════════════════════════════════════════
+
+BUSINESS CONTEXT:
+- Agents work at call centers (center_location: Durban, Jamaica, Charlotte).
+- On each call, the rank model outputs up to 4 recommended plans in priority order.
+- Rec slot 1 = "Diamond" (top rec). Rec slot 2-4 = "Gold" (slide recs).
+- Agents can pitch any plan — the dashboard measures whether they follow the model's recommendations.
+- A "pitch" is a product the agent presented to the customer. Pitches are stored in order in pitches_in_order.
+- "First pitch" = the first product the agent presented on the call (element_at(pitches_in_order, 1)).
+
+PLAN TYPES:
+- Plans are categorized as Fixed, Tiered, or Bundled (top_recommended_plan_type, first_pitch_plan_category).
+- The rank model assigns a plan type to each rec slot via recommended_plan_types_in_order.
+
+═══════════════════════════════════════════════
+PLAIN-ENGLISH GLOSSARY — use this to answer "what is X" questions
+═══════════════════════════════════════════════
+
+WHAT IS AN ADHERED CALL?
+An adhered call is one where the agent followed the model's top recommendation.
+Specifically: the agent pitched the #1 recommended plan (the "Diamond" slot) as
+their very first pitch on the call, AND the Arcadia tool recorded that they actually
+viewed the Diamond pitch screen before doing so. Both conditions must be true.
+The logic exists because we want to distinguish agents who genuinely used the tool
+from those who happened to pitch the right product by coincidence.
+Column: adhered_call = 1.0 (yes) or 0.0 (no).
+
+WHAT IS A SLIDE CALL?
+A slide call is one where the agent pitched one of the secondary recommendations
+(the "Gold" slots — rec positions 2, 3, or 4) as their first pitch, AND viewed the
+slide recommendations pitch screen. The agent deviated from the top rec but still
+used a model-recommended product. Column: slide_call = 1.0 or 0.0.
+
+WHAT IS AN ALL PLANS CALL?
+A call where the agent viewed the all-plans pitch screen and did not adhere or slide.
+The agent pitched something outside the model's recommendations entirely.
+Column: all_plans_call = 1.0 or 0.0.
+
+WHAT IS THE CLASSIFICATION BUCKET?
+Every call is assigned to exactly one of four buckets based on the adherence logic above:
+- "Adherence": agent followed the top rec (adhered_call = 1)
+- "Slide": agent used a secondary rec (slide_call = 1)
+- "All Plans": agent used the all-plans view (all_plans_call = 1)
+- "Unclassified": none of the above view flags were recorded
+Column: classification_bucket.
+
+WHAT IS DIAMOND / GOLD / SILVER / BRONZE (first_pitch_type)?
+These describe the tier of the plan the agent pitched first, relative to the model's
+recommendations for that specific call:
+- Diamond: the agent's first pitch was the model's #1 recommended plan
+- Gold: the agent's first pitch was one of the model's secondary recommended plans (#2, #3, or #4)
+- Silver: the agent's first pitch was not a recommended plan but was a high-value plan
+  (plan points >= 25, from the plan masterlist)
+- Bronze: the agent's first pitch was not recommended and was a lower-value plan
+This is different from classification_bucket — it doesn't require the pitch view flags,
+just the product match. Column: first_pitch_type.
+
+WHAT IS SALE TYPE (sale_type)?
+The tier of the plan the customer actually bought, using the same Diamond/Gold/Silver/Bronze
+logic but applied to the sold product rather than the first-pitched product.
+- Diamond sale: customer bought the model's top recommended plan
+- Gold sale: customer bought one of the model's secondary recommended plans
+- Silver/Bronze: customer bought something outside the recommendations
+NULL on calls with no sale. Used to measure whether adherence leads to better sales quality,
+not just higher conversion. Column: sale_type.
+
+WHAT IS GCV?
+Gross Contract Value — the estimated total revenue from a plan sale over the contract term.
+It's the primary financial metric. gcv = total GCV across all orders on the call (0 if no sale).
+gcv_on_first_pitch = GCV only if the first-pitched product was the one that sold (0 otherwise).
+This measures whether the agent's opening pitch was the one that closed the deal.
+
+WHAT IS GCV / CALL vs GCV / 1ST PITCH vs RPO?
+- GCV / Call: average GCV across ALL calls including non-converting ones. This is an
+  expected value — it captures both conversion rate and revenue per sale in one number.
+  The best single metric for comparing agent or strategy performance.
+- GCV / 1st Pitch: average gcv_on_first_pitch across ALL calls. Measures how often
+  the first pitch both converted AND generated revenue — rewards agents who close on
+  their opening pitch.
+- RPO (Revenue Per Order): average GCV only among calls that converted. Measures
+  plan quality when a sale does happen, but ignores conversion rate entirely.
+  Use RPO to answer "when agents do sell, how valuable is it?" — not for overall
+  performance comparison.
+
+WHAT IS THE CONFIDENCE GAP?
+The model scores each plan type with an expected-points value (probability × plan points).
+The confidence gap (expected_points_gap_1_2) is the difference between the #1 and #2
+scored plan types. A large gap means the model strongly prefers its top recommendation.
+A small gap means two plan types are nearly equal and the recommendation is less certain.
+Used to ask: "does the model's confidence correlate with adherence or outcomes?"
+
+WHAT IS THE HAPPY PATH?
+A subset of calls that meet all quality criteria for fair analysis:
+- The call was handled through the Arcadia tool (in_arcadia_target = True)
+- No failed qualification event (e.g. TXU/TriEagle rejection) occurred
+- The agent did not pitch a Payless product (a known data quality issue)
+- The model did not output a "Low" plan type recommendation (edge case exclusion)
+The sidebar "Happy Path Calls Only" toggle filters to happy_path = 1. Most analysis
+should be done on happy path calls to avoid distortion from these edge cases.
+
+WHAT IS FIRST PITCH CR?
+The share of ALL calls (not just converting ones) where the first-pitched product
+was the one the customer bought. A call with a sale on the second pitch does NOT
+count as a first pitch conversion. Formula: (gcv_on_first_pitch > 0).mean() * 100.
+Rewards agents who lead with the right product and close immediately.
+
+WHAT IS OVERALL CR?
+The share of ALL calls that resulted in any order, regardless of which pitch closed it.
+Formula: (order_count > 0).mean() * 100. A higher overall CR than first pitch CR means
+the agent is relying on follow-up pitches to close.
+
+WHAT IS ADHERENCE RATE?
+The share of calls where the agent adhered (pitched the Diamond rec first with the
+view flag). Formula: adhered_call.mean() * 100. This is the primary measure of
+whether agents are following the model's recommendations.
+
+WHAT IS P4WA?
+"Prior 4-Week Average" — a rolling baseline used throughout the dashboard. It is the
+pooled metric value across all calls in the four full Monday–Sunday weeks prior to the
+current week. Used as the comparison benchmark for week-to-date (WTD) metrics.
+It is not an average of four weekly values — it pools all calls from those four weeks
+and computes the metric once on the combined dataset.
+
+WHAT IS WTD?
+"Week to Date" — calls from Monday of the current week through yesterday. On Mondays,
+yesterday is Sunday, so WTD equals the full prior Mon–Sun week.
+
+WHAT IS THE ARCADIA TOOL?
+The agent-facing web application that displays the model's recommendations in real time
+during a call. It shows the Diamond pitch screen (top rec), the slide/Gold pitch screen
+(secondary recs), and an all-plans screen. The element view flags (has_top_rec_pitch_view
+etc.) record whether the agent actually opened each screen. Arcadia is how the model's
+recommendations reach the agent.
+
+WHAT IS SITE VS SERP?
+- Site: the customer came through a direct web session (has a web_session_id)
+- SERP: the customer came through a search engine results page click (no web session)
+These represent different customer acquisition channels with different intent profiles.
+Column: site_serp.
+
+WHAT ARE THE MARKETING BUCKETS?
+Segments based on the IVR split name — how the customer was routed:
+Natural, Brand-Partner, Generic, Aggregator, Competitor, Utility, PMax, NRG, Other Bucket.
+These reflect the marketing channel that generated the call and affect customer quality.
+
+WHAT IS MOVER VS SWITCHER?
+- Mover: customer is setting up new electricity service (moving to a new address)
+- Switcher: customer is switching from their current provider
+These have different conversion profiles — movers tend to convert at higher rates since
+they need to establish service. Column: mover_switcher.
+
+WHAT ARE PERFORMANCE QUARTILES?
+Agents are ranked by their average points_on_first_pitch and divided into 4 quartiles.
+Quartile 1 = top performers, Quartile 4 = bottom performers.
+Column: performance_quartile. Used to compare high vs low performing agent cohorts.
+
+HOW METRICS ARE COMPUTED — always use exactly these definitions:
+
+CONVERSION:
+- order_count: number of orders placed on the call. A converting call has order_count > 0.
+- "Overall CR" = (order_count > 0).mean() * 100   ← share of ALL calls that resulted in any order
+- "1st Pitch CR" = (gcv_on_first_pitch > 0).mean() * 100   ← share of ALL calls where the first-pitched product was sold
+- gcv_on_first_pitch is 0 on non-converting calls AND on calls where the order was not the first-pitched product. It is NOT conditional on conversion.
+
+GCV (Gross Contract Value):
+- gcv: total GCV across all orders on the call. 0.0 on non-converting calls.
+- gcv_on_first_pitch: GCV attributed to the first pitch only. 0.0 if the order was not on the first pitch.
+- "GCV / Call" = gcv.mean()   ← mean over ALL calls including zeros (expected value per call)
+- "GCV / 1st Pitch" = gcv_on_first_pitch.mean()   ← mean over ALL calls including zeros (NOT conditional mean)
+- NEVER compute GCV as gcv[gcv > 0].mean() — that gives revenue-per-sale, not revenue-per-call.
+- RPO (Revenue Per Order) = gcv[order_count > 0].mean()   ← the ONE metric that IS conditional on conversion
+
+POINTS:
+- points: total plan points earned on the call. 0.0 on non-converting calls.
+- points_on_first_pitch: points attributed to the first pitch only. 0.0 if order was not on first pitch.
+- first_pitch_plan_points: the point value of the first-pitched plan (from the plan masterlist), regardless of whether it sold.
+
+ADHERENCE — how closely the agent followed the model's recommendation:
+- adhered_call = 1.0 when: agent pitched rec slot 1 (Diamond) first AND has_top_rec_pitch_view = True
+- slide_call   = 1.0 when: agent pitched a rec slot 2-4 (Gold) first AND has_slide_recs_pitch_view = True
+- all_plans_call = 1.0 when: has_all_plans_pitch_view = True AND adhered_call = 0 AND slide_call = 0
+- classification_bucket: "Adherence", "Slide", "All Plans", or "Unclassified"
+- "Adherence rate" = adhered_call.mean() * 100   ← mean over ALL calls (0/1 column, already binary)
+- NEVER recompute adhered_call from other columns — use the column directly.
+
+PITCH TIER CLASSIFICATION (first_pitch_type):
+- "Diamond": first_pitch_canonical matches rec slot 1 canonical key
+- "Gold": first_pitch_canonical matches rec slot 2, 3, or 4 canonical key
+- "Silver": first pitch plan points >= 25.0 (SILVER_POINTS_THRESHOLD) but not a rec slot match
+- "Bronze": everything else
+- Use first_pitch_type directly — do not re-derive from other columns.
+
+SALE TYPE (sale_type) — tier of the plan that was actually sold:
+- Derived from v_orders product name matched against rec display names (term-stripped, lowercased).
+- "Diamond": sold product matches rec slot 1
+- "Gold": sold product matches rec slots 2, 3, or 4
+- "Silver": sold product points >= 25.0
+- "Bronze": sold product outside all rec slots, points < 25.0
+- sale_type is NULL on non-converting calls (order_count = 0 or null).
+- "Sale mix" = value_counts(normalize=True) on sale_type among rows where order_count > 0, * 100
+
+ELEMENT VIEW FLAGS (boolean columns):
+- has_top_rec_pitch_view: agent viewed the Diamond pitch screen during the call
+- has_slide_recs_pitch_view: agent viewed the Gold/slide pitch screen
+- has_all_plans_pitch_view: agent viewed the all-plans pitch screen
+- These are required conditions for adherence classification — a pitch without the view flag doesn't count.
+
+HAPPY PATH FILTER:
+- happy_path = 1 when ALL of: in_arcadia_target=True, failed_qualification=False, has_payless_pitch=False, has_low_rec=False
+- The sidebar "Happy Path Calls Only" toggle filters to happy_path = 1. When active, df already contains only happy_path calls.
+- Do not re-filter on happy_path inside your code unless you are explicitly working with df_raw or df_nodatefilter.
+
+MODEL CONFIDENCE:
+- raw_prob_fixed / raw_prob_tiered / raw_prob_bundled: the model's raw conversion probability for each plan type (0–1 floats). Display as percentages (* 100).
+- expected_points_gap_1_2: expected-points difference between rec slot 1 and rec slot 2. Higher = model is more confident in its top rec.
+- expected_points_gap_2_3: gap between slot 2 and slot 3.
+- Higher confidence gap = model more strongly prefers its top recommendation.
+
+DATA SCOPE:
+- df               — sidebar filters + date range applied. Use by default.
+- df_nodatefilter  — sidebar filters only, no date window. Use when the user specifies their own date range or asks about trends over a longer period.
+- df_raw           — fully unfiltered. Use only when the user explicitly wants data outside the current sidebar filters.
+
+═══════════════════════════════════════════════
+COLUMN REFERENCE — key columns and their meaning
+═══════════════════════════════════════════════
+
+call_id                         — unique call identifier
+call_date                       — date of the call (datetime)
+center_location                 — call center: Durban, Jamaica, Charlotte
+agent_name                      — agent display name
+agent_tier                      — agent tier from HR/workforce system (not pitch tier)
+performance_quartile            — agent quartile (1=top) ranked by avg points_on_first_pitch
+avg_points_on_first_pitch       — agent-level average points on first pitch (used for quartile ranking)
+
+order_count                     — number of orders on the call (0 = no sale)
+order_rate                      — 1.0 if order_count > 0, else 0.0
+gcv                             — total GCV on call (0.0 if no sale)
+gcv_on_first_pitch              — GCV if first-pitched product sold, else 0.0
+points                          — total points on call (0.0 if no sale)
+points_on_first_pitch           — points if first-pitched product sold, else 0.0
+first_pitch_plan_points         — point value of first-pitched plan from masterlist (regardless of sale)
+
+pitches_in_order                — list of product names pitched, in order
+pitches_canonical_in_order      — list of canonical keys for pitched products
+pitches_plan_category_in_order  — list of plan types (Fixed/Tiered/Bundled) for pitched products
+first_pitch                     — product name of first pitch
+first_pitch_canonical           — canonical key of first pitch
+first_pitch_plan_category       — plan type of first pitch (Fixed / Tiered / Bundled)
+first_pitch_type                — tier of first pitch: Diamond / Gold / Silver / Bronze
+
+recommended_in_order            — list of recommended product names (slot 1 = Diamond, slots 2-4 = Gold)
+recommended_canonical_in_order  — canonical keys of recommended products
+recommended_plan_types_in_order — plan types of recommended slots (Fixed / Tiered / Bundled)
+top_recommended_plan_type       — plan type of the #1 recommendation (Fixed / Tiered / Bundled)
+
+adhered_call                    — 1.0 if agent pitched Diamond rec first with view flag, else 0.0
+slide_call                      — 1.0 if agent pitched a Gold rec first with view flag, else 0.0
+all_plans_call                  — 1.0 if agent used all-plans view (not adh or slide), else 0.0
+classification_bucket           — "Adherence" / "Slide" / "All Plans" / "Unclassified"
+sale_type                       — tier of sold product: Diamond / Gold / Silver / Bronze / null
+pitched_top_rec_first           — bool: first pitch canonical matches rec slot 1
+pitched_slide_rec_first         — bool: first pitch canonical matches a Gold rec slot
+pitched_all_plans_first         — bool: first pitch is outside all rec slots
+product_type_adhered            — bool: first_pitch_plan_category == top_recommended_plan_type
+
+has_top_rec_pitch_view          — bool: agent viewed Diamond pitch screen
+has_slide_recs_pitch_view       — bool: agent viewed Gold/slide pitch screen
+has_all_plans_pitch_view        — bool: agent viewed all-plans pitch screen
+
+raw_prob_fixed                  — model's raw P(convert | Fixed) for this call (0-1)
+raw_prob_tiered                 — model's raw P(convert | Tiered) for this call (0-1)
+raw_prob_bundled                — model's raw P(convert | Bundled) for this call (0-1)
+expected_points_gap_1_2         — expected-points gap between rec slot 1 and slot 2
+expected_points_gap_2_3         — expected-points gap between rec slot 2 and slot 3
+
+site_serp                       — "Site" (has web session) or "SERP" (no web session)
+marketing_bucket                — Natural / Brand-Partner / Generic / Aggregator / Competitor / Utility / PMax / NRG / Other Bucket
+mover_switcher                  — whether caller is moving (new service) or switching (existing service)
+talk_time_minutes               — call duration in minutes
+objection_reason                — reason captured if customer objected (nullable)
+
+in_arcadia_target               — bool: call was in the Arcadia tool target population
+failed_qualification            — bool: call had a failed qualification event (TXU/TriEagle)
+has_payless_pitch               — bool: call included a Payless pitch
+has_low_rec                     — bool: model recommended a Low plan type on this call
+happy_path                      — 1 if in_arcadia_target & ~failed_qualification & ~has_payless_pitch & ~has_low_rec
+
+═══════════════════════════════════════════════
+CONSISTENCY AND CHART RULES
+═══════════════════════════════════════════════
+
+CONSISTENCY RULES:
+- Your final answer must be derived exclusively from the is_final result object.
+- Do NOT reference any numbers, names, or rankings from earlier steps.
+- Every specific value you mention must appear verbatim in the is_final result.
+- If your answer contains a numbered list of agents, extract those names programmatically in the is_final code block.
+- The correct pattern for "show a chart AND list the top N" is ONE is_final code block returning result = {"figure": fig, "summary": summary_df}.
+- If you notice any inconsistency, call execute_python again rather than papering over it in prose.
+
+CHART RULES:
+- Always establish date boundaries before plotting:
+    date_max = df_use['call_date'].max()
+    date_min = df_use['call_date'].min()
+- Never let the chart x-axis extend beyond date_max.
+- When resampling by week use freq='W-MON'. Drop bins where index > date_max:
+    ts = ts[ts.index <= pd.Timestamp(date_max)]
+- Use go.Figure (plotly.graph_objects) for all charts.
+
+FORMATTING RULES:
+- Percentages: always * 100 and round to 1dp. Never display raw proportions like 0.136.
+- Dollar values: comma-formatted, no decimals (e.g. $1,234).
+- Date filtering: use .dt.date >= and .dt.date <= not string comparison.
+- Column names are case-sensitive.
+- Never call print(). Always assign to result. Never ask clarifying questions.
+"""
+
+    def run_code(code: str, dataframe: pd.DataFrame):
+        import plotly.graph_objects as _go
+        import plotly.express as _px
+        local_ns = {
+            "df":              dataframe.copy(),
+            "df_nodatefilter": df_nodatefilter.copy(),
+            "df_raw":          df_raw.copy(),
+            "pd":              pd,
+            "np":              __import__("numpy"),
+            "go":              _go,
+            "px":              _px,
+        }
+        try:
+            exec(code, {}, local_ns)  # noqa: S102
+            result = local_ns.get("result", "⚠️ No `result` variable assigned.")
+            return result, None
+        except Exception:
+            return None, _tb.format_exc()
+
+    def format_for_model(result) -> str:
+        import plotly.graph_objects as _go
+        if result is None:
+            return "None"
+        if isinstance(result, _go.Figure):
+            traces = []
+            for trace in result.data:
+                x = list(trace.x) if hasattr(trace, "x") and trace.x is not None else []
+                y = list(trace.y) if hasattr(trace, "y") and trace.y is not None else []
+                traces.append(
+                    f"  Trace '{trace.name}': "
+                    f"x={x[:5]}{'...' if len(x) > 5 else ''}, "
+                    f"y={y[:5]}{'...' if len(y) > 5 else ''}"
+                )
+            return "Plotly Figure with traces:\n" + "\n".join(traces)
+        if isinstance(result, dict):
+            parts = []
+            for k, v in result.items():
+                if isinstance(v, _go.Figure):
+                    parts.append(f"{k}: [Plotly Figure — see trace summary above]")
+                elif isinstance(v, pd.DataFrame):
+                    parts.append(f"{k} (DataFrame {v.shape}):\n{v.to_string(max_rows=50)}")
+                elif isinstance(v, pd.Series):
+                    parts.append(f"{k} (Series {len(v)}):\n{v.to_string(max_rows=50)}")
+                else:
+                    parts.append(f"{k}: {v}")
+            return "\n\n".join(parts)
+        if isinstance(result, pd.DataFrame):
+            return (
+                f"DataFrame: {result.shape[0]} rows × {result.shape[1]} cols\n"
+                f"{result.to_string(max_rows=50, max_cols=20)}"
+            )
+        if isinstance(result, pd.Series):
+            return f"Series ({len(result)} items):\n{result.to_string(max_rows=50)}"
+        return str(result)
+
+    def render_step_body(step: dict):
+        kind = step.get("kind")
+        if kind == "user":
+            st.markdown(step.get("content", ""))
+        elif kind == "thinking":
+            st.markdown(f"**Planning - {step.get('summary', '')}**")
+            st.markdown(step.get("content", ""))
+        elif kind == "code":
+            st.markdown(f"**Step {step.get('n')} - {step.get('rationale', '')}**")
+            st.code(step.get("code", ""), language="python")
+        elif kind == "result":
+            import plotly.graph_objects as _go
+            r = step.get("content", step.get("result"))
+            step_label = step.get("step_num", step.get("n"))
+            st.markdown(f"**Result {step_label}**")
+            if isinstance(r, dict):
+                if "figure" in r and isinstance(r["figure"], _go.Figure):
+                    st.plotly_chart(r["figure"], use_container_width=True)
+                if "summary" in r:
+                    if isinstance(r["summary"], pd.DataFrame):
+                        st.dataframe(r["summary"], use_container_width=True)
+                    elif isinstance(r["summary"], pd.Series):
+                        st.dataframe(r["summary"].reset_index(), use_container_width=True)
+                    else:
+                        st.write(r["summary"])
+                remaining = {k: v for k, v in r.items() if k not in ("figure", "summary")}
+                for k, v in remaining.items():
+                    st.write(f"**{k}:**", v)
+            elif isinstance(r, _go.Figure):
+                st.plotly_chart(r, use_container_width=True)
+            elif isinstance(r, pd.DataFrame):
+                st.dataframe(r, use_container_width=True)
+            elif isinstance(r, pd.Series):
+                st.dataframe(r.reset_index(), use_container_width=True)
+            else:
+                st.write(r)
+        elif kind == "error":
+            st.markdown(f"**Error on step {step.get('n')} - retrying...**")
+            st.code(step.get("error", ""), language="text")
+        elif kind == "answer":
+            st.markdown(step.get("content", ""))
+
+    def render_step(step: dict):
+        kind = step.get("kind")
+        if kind == "user":
+            import html as _html
+
+            st.markdown(
+                f"""
+                <div class="ai-user-row">
+                    <div class="ai-user-bubble">{_html.escape(step.get("content", ""))}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        elif kind == "answer":
+            render_step_body(step)
+        else:
+            with st.expander(f"Analysis step - {kind}", expanded=False):
+                render_step_body(step)
+
+    def render_agent_transcript(steps: list[dict]):
+        i = 0
+        while i < len(steps):
+            step = steps[i]
+            if step.get("kind") == "user":
+                render_step(step)
+                i += 1
+
+            intermediate_steps = []
+            final_answer = None
+            while i < len(steps) and steps[i].get("kind") != "user":
+                if steps[i].get("kind") == "answer":
+                    final_answer = steps[i]
+                    i += 1
+                    break
+                intermediate_steps.append(steps[i])
+                i += 1
+
+            if intermediate_steps:
+                with st.expander(f"Analysis steps ({len(intermediate_steps)})", expanded=False):
+                    for j, intermediate in enumerate(intermediate_steps):
+                        render_step_body(intermediate)
+                        if j < len(intermediate_steps) - 1:
+                            st.divider()
+
+            if final_answer is not None:
+                render_step(final_answer)
+
+            if step.get("kind") != "user" and final_answer is None and not intermediate_steps:
+                render_step(step)
+                i += 1
+
+    _schema_display = build_schema_context(df)
+
+    if "agent_steps" not in st.session_state:
+        st.session_state.agent_steps = []
+    if "agent_messages" not in st.session_state:
+        st.session_state.agent_messages = []
+    if "ai_analyst_pending_example" not in st.session_state:
+        st.session_state.ai_analyst_pending_example = None
+    if "ai_analyst_pending_user_input" not in st.session_state:
+        st.session_state.ai_analyst_pending_user_input = None
+    if "ai_analyst_limit_warning" not in st.session_state:
+        st.session_state.ai_analyst_limit_warning = False
+
+    with st.sidebar:
+        st.divider()
+        with st.expander("AI Analyst Dataset Schema", expanded=False):
+            st.code(_schema_display, language="text")
+
+    st.markdown(
+        """
+        <style>
+        .ai-empty-state {
+            min-height: 42vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            text-align: center;
+        }
+        .ai-empty-state h1 {
+            opacity: 0.45;
+            font-size: 3.25rem;
+            font-weight: 600;
+            margin-bottom: 2rem;
+        }
+        div[data-testid="stButton"] button,
+        div[data-testid="stButton"] button[kind],
+        div[data-testid="stButton"] button[data-testid*="baseButton"] {
+            border-radius: 999px !important;
+            padding: 0.55rem 1rem !important;
+            white-space: normal !important;
+            background-color: rgb(39, 39, 42) !important;
+            background: rgb(39, 39, 42) !important;
+            border: 1px solid rgb(113, 113, 122) !important;
+            box-shadow: none !important;
+            color: rgb(212, 212, 216) !important;
+            transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease !important;
+        }
+        div[data-testid="stButton"] button p,
+        div[data-testid="stButton"] button span {
+            color: rgb(212, 212, 216) !important;
+        }
+        div[data-testid="stButton"] button:hover:enabled,
+        div[data-testid="stButton"] button[kind]:hover:enabled,
+        div[data-testid="stButton"] button[data-testid*="baseButton"]:hover:enabled {
+            background-color: rgb(63, 63, 70) !important;
+            background: rgb(63, 63, 70) !important;
+            border-color: rgb(161, 161, 170) !important;
+            color: rgb(244, 244, 245) !important;
+        }
+        div[data-testid="stButton"] button:hover:enabled p,
+        div[data-testid="stButton"] button:hover:enabled span {
+            color: rgb(244, 244, 245) !important;
+        }
+        div[data-testid="stButton"] button:disabled,
+        div[data-testid="stButton"] button[kind]:disabled,
+        div[data-testid="stButton"] button[data-testid*="baseButton"]:disabled {
+            background-color: rgba(39, 39, 42, 0.58) !important;
+            background: rgba(39, 39, 42, 0.58) !important;
+            border-color: rgba(113, 113, 122, 0.45) !important;
+            color: rgba(212, 212, 216, 0.55) !important;
+        }
+        div[data-testid="stButton"] button:disabled p,
+        div[data-testid="stButton"] button:disabled span {
+            color: rgba(212, 212, 216, 0.55) !important;
+        }
+        .ai-user-row {
+            width: 100%;
+            display: flex;
+            justify-content: flex-end;
+            margin: 0.75rem 0 1rem;
+        }
+        .ai-user-bubble {
+            max-width: 75%;
+            border-radius: 1rem;
+            padding: 0.8rem 1rem;
+            background: rgba(49, 130, 206, 0.14);
+            border: 1px solid rgba(49, 130, 206, 0.22);
+            line-height: 1.45;
+            overflow-wrap: anywhere;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    def queue_example(question: str):
+        st.session_state.ai_analyst_pending_example = question
+
+    has_chat = len(st.session_state.agent_steps) > 0
+    pending_example = st.session_state.ai_analyst_pending_example
+    pending_user_input = st.session_state.ai_analyst_pending_user_input
+    pending_request = pending_example or pending_user_input
+
+    if not has_chat and not pending_request:
+        st.markdown('<div class="ai-empty-state"><h1>Ask a question</h1></div>', unsafe_allow_html=True)
+        example_questions = [
+            "Return a chart with Durban's weekly adherence rate for the last 4 weeks.",
+            "Which recommendation types have the highest GCV per sale?",
+            "Which agents have the strongest Diamond sale mix?",
+            "Which center location has the highest 1st pitch CR?",
+        ]
+        ex_cols = st.columns(2)
+        for i, question in enumerate(example_questions):
+            ex_cols[i % 2].button(
+                question,
+                key=f"ai_example_{i}",
+                use_container_width=True,
+                on_click=queue_example,
+                args=(question,),
+            )
+
+    render_agent_transcript(st.session_state.agent_steps)
+
+    if st.session_state.ai_analyst_limit_warning:
+        st.warning("The AI Analyst reached the maximum number of tool steps. Ask a narrower follow-up or clear the chat and try again.")
+
+    if pending_request:
+        user_input = pending_request
+        st.session_state.ai_analyst_pending_example = None
+        st.session_state.ai_analyst_pending_user_input = None
+        st.session_state.ai_analyst_limit_warning = False
+        full_system = SYSTEM_PROMPT + f"\n\nCURRENT DATASET SCHEMA:\n{_schema_display}"
+        client = _OpenAI()
+
+        user_step = {"kind": "user", "content": user_input}
+        st.session_state.agent_steps.append(user_step)
+        st.session_state.agent_messages.append({"role": "user", "content": user_input})
+        render_step(user_step)
+
+        MAX_STEPS = 16
+        step_num = 0
+
+        with st.status("Agent is running...", expanded=False) as run_status:
+            while step_num < MAX_STEPS:
+                try:
+                    response = client.chat.completions.create(
+                        model="gpt-4o",
+                        tools=TOOLS,
+                        tool_choice="auto",
+                        messages=[{"role": "system", "content": full_system}]
+                                 + st.session_state.agent_messages[-20:],
+                    )
+                except Exception:
+                    err = _tb.format_exc()
+                    err_step = {"kind": "error", "n": step_num + 1, "error": err}
+                    st.session_state.agent_steps.append(err_step)
+                    break
+
+                msg = response.choices[0].message
+                tool_calls = msg.tool_calls or []
+                msg_content = msg.content or ""
+
+                if response.choices[0].finish_reason == "stop" and not tool_calls:
+                    answer_step = {"kind": "answer", "content": msg_content}
+                    st.session_state.agent_steps.append(answer_step)
+                    st.session_state.agent_messages.append({"role": "assistant", "content": msg_content})
+                    break
+
+                if tool_calls:
+                    if msg_content.strip():
+                        thinking_step = {
+                            "kind": "thinking",
+                            "summary": msg_content.strip()[:80] + ("..." if len(msg_content.strip()) > 80 else ""),
+                            "content": msg_content,
+                        }
+                        st.session_state.agent_steps.append(thinking_step)
+
+                    st.session_state.agent_messages.append({
+                        "role": "assistant",
+                        "content": msg_content,
+                        "tool_calls": [
+                            {
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.function.name,
+                                    "arguments": tc.function.arguments,
+                                },
+                            }
+                            for tc in tool_calls
+                        ],
+                    })
+
+                    for tool_call in tool_calls:
+                        try:
+                            args = _json.loads(tool_call.function.arguments)
+                        except Exception:
+                            args = {"code": "", "rationale": "Could not parse tool arguments."}
+
+                        code = args.get("code", "")
+                        rationale = args.get("rationale", "")
+                        is_final = args.get("is_final", False)
+                        step_num += 1
+                        run_status.update(label=f"Agent is running... step {step_num}", state="running", expanded=False)
+
+                        code_step = {
+                            "kind": "code",
+                            "n": step_num,
+                            "code": code,
+                            "rationale": rationale,
+                        }
+                        st.session_state.agent_steps.append(code_step)
+
+                        result, error = run_code(code, df)
+                        if error:
+                            error_step = {"kind": "error", "n": step_num, "error": error}
+                            st.session_state.agent_steps.append(error_step)
+                            st.session_state.agent_messages.append({
+                                "role": "tool",
+                                "tool_call_id": tool_call.id,
+                                "content": f"ERROR:\n{error}",
+                            })
+                        else:
+                            result_step = {"kind": "result", "step_num": step_num, "content": result}
+                            st.session_state.agent_steps.append(result_step)
+                            step_count = sum(1 for s in st.session_state.agent_steps if s["kind"] == "code")
+                            tool_content = format_for_model(result)
+
+                            if is_final:
+                                tool_content += (
+                                    "\n\n--- FINAL RESULT LOCK ---"
+                                    "\nYour narrative MUST be derived exclusively from the result above."
+                                    "\nDo NOT reference any numbers, rankings, or names from previous steps."
+                                    "\nEvery specific value you mention must appear verbatim in this result."
+                                    "\nIf this result is a chart, do not list specific data points in prose unless "
+                                    "your code explicitly extracted those values into the result dict."
+                                    "\nIf you notice any inconsistency between this result and what you expected, "
+                                    "call execute_python again rather than papering over it in prose."
+                                )
+                            elif step_count > 1:
+                                tool_content += (
+                                    f"\n\n--- CONSISTENCY REMINDER (step {step_num}) ---"
+                                    f"\nYou have now run {step_num} code steps. When you are ready to give your final answer, "
+                                    f"your last code step (with is_final=true) must produce a single unified result containing "
+                                    f"everything your answer will reference. Do not split the final answer across multiple steps "
+                                    f"and then merge them mentally — produce one self-contained final result."
+                                )
+
+                            st.session_state.agent_messages.append({
+                                "role": "tool",
+                                "tool_call_id": tool_call.id,
+                                "content": tool_content,
+                            })
+                else:
+                    if msg_content.strip():
+                        answer_step = {"kind": "answer", "content": msg_content}
+                        st.session_state.agent_steps.append(answer_step)
+                    st.session_state.agent_messages.append({"role": "assistant", "content": msg_content})
+                    break
+
+            run_status.update(label="Agent finished.", state="complete", expanded=False)
+
+        if step_num >= MAX_STEPS:
+            st.session_state.ai_analyst_limit_warning = True
+        st.rerun()
+
+    typed_user_input = st.chat_input("What do you want to know?", key="ai_analyst_input")
+    if typed_user_input:
+        st.session_state.ai_analyst_pending_user_input = typed_user_input
+        st.rerun()
+
+    if st.button("Clear", key="ai_analyst_clear", disabled=not has_chat):
+        st.session_state.agent_steps = []
+        st.session_state.agent_messages = []
+        st.session_state.ai_analyst_pending_example = None
+        st.session_state.ai_analyst_pending_user_input = None
+        st.session_state.ai_analyst_limit_warning = False
+        st.rerun()

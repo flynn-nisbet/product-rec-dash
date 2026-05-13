@@ -1,2 +1,5 @@
 pandas
 databricks-connect==16.1.7
+openai
+plotly
+python-dotenv
