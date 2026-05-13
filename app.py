@@ -1758,17 +1758,17 @@ with tab_chat:
     def build_schema_context(d: pd.DataFrame) -> str:
         lines = [
             "═══ DATA SCOPE ═══",
-            f"df (filtered):         {d.shape[0]:,} rows × {d.shape[1]} columns",
+            f"df (raw, default):     {d.shape[0]:,} rows × {d.shape[1]} columns",
             f"df_nodatefilter:       {df_nodatefilter.shape[0]:,} rows (sidebar filters, no date window)",
-            f"df_raw:                {df_raw.shape[0]:,} rows (fully unfiltered)",
+            f"df_filtered:           {df.shape[0]:,} rows (sidebar + date filters)",
         ]
 
         if "call_date" in d.columns and d["call_date"].notna().any():
-            lines.append(f"Filtered date range:   {d['call_date'].min().date()} – {d['call_date'].max().date()}")
-        if "call_date" in df_raw.columns and df_raw["call_date"].notna().any():
-            lines.append(f"Raw date range:        {df_raw['call_date'].min().date()} – {df_raw['call_date'].max().date()}")
+            lines.append(f"Raw date range:        {d['call_date'].min().date()} – {d['call_date'].max().date()}")
+        if "call_date" in df.columns and df["call_date"].notna().any():
+            lines.append(f"Filtered date range:   {df['call_date'].min().date()} – {df['call_date'].max().date()}")
 
-        lines.append("\n═══ KEY COLUMN VALUES (filtered df) ═══")
+        lines.append("\n═══ KEY COLUMN VALUES (raw df) ═══")
         key_cats = [
             "center_location", "top_recommended_plan_type", "classification_bucket",
             "first_pitch_type", "sale_type", "mover_switcher", "marketing_bucket",
@@ -2042,8 +2042,9 @@ ELEMENT VIEW FLAGS (boolean columns):
 
 HAPPY PATH FILTER:
 - happy_path = 1 when ALL of: in_arcadia_target=True, failed_qualification=False, has_payless_pitch=False, has_low_rec=False
-- The sidebar "Happy Path Calls Only" toggle filters to happy_path = 1. When active, df already contains only happy_path calls.
-- Do not re-filter on happy_path inside your code unless you are explicitly working with df_raw or df_nodatefilter.
+- The sidebar "Happy Path Calls Only" toggle filters df_nodatefilter and df_filtered to happy_path = 1 when active.
+- The default df in code is raw and does NOT automatically include sidebar or happy-path filters.
+- Do not filter on happy_path unless the user explicitly asks for happy-path calls or asks to apply sidebar filters.
 
 MODEL CONFIDENCE:
 - raw_prob_fixed / raw_prob_tiered / raw_prob_bundled: the model's raw conversion probability for each plan type (0–1 floats). Display as percentages (* 100).
@@ -2052,9 +2053,10 @@ MODEL CONFIDENCE:
 - Higher confidence gap = model more strongly prefers its top recommendation.
 
 DATA SCOPE:
-- df               — sidebar filters + date range applied. Use by default.
-- df_nodatefilter  — sidebar filters only, no date window. Use when the user specifies their own date range or asks about trends over a longer period.
-- df_raw           — fully unfiltered. Use only when the user explicitly wants data outside the current sidebar filters.
+- df               — fully unfiltered raw data. Use this by default for all questions unless the user specifies filters.
+- df_nodatefilter  — sidebar filters applied, no date window. Use only when the user explicitly asks to apply sidebar filters.
+- df_filtered      — sidebar + date filters applied. Use only when the user explicitly requests both sidebar and date filters.
+- In code, `df` means raw unfiltered data; `df_nodatefilter` means sidebar filters only; `df_filtered` means sidebar + date filters.
 
 ═══════════════════════════════════════════════
 COLUMN REFERENCE — key columns and their meaning
@@ -2156,7 +2158,8 @@ FORMATTING RULES:
         local_ns = {
             "df":              dataframe.copy(),
             "df_nodatefilter": df_nodatefilter.copy(),
-            "df_raw":          df_raw.copy(),
+            "df_filtered":     df.copy(),
+            "df_raw":          dataframe.copy(),
             "pd":              pd,
             "np":              __import__("numpy"),
             "go":              _go,
@@ -2298,7 +2301,7 @@ FORMATTING RULES:
                 render_step(step)
                 i += 1
 
-    _schema_display = build_schema_context(df)
+    _schema_display = build_schema_context(df_raw)
 
     if "agent_steps" not in st.session_state:
         st.session_state.agent_steps = []
@@ -2511,7 +2514,7 @@ FORMATTING RULES:
                         }
                         st.session_state.agent_steps.append(code_step)
 
-                        result, error = run_code(code, df)
+                        result, error = run_code(code, df_raw)
                         if error:
                             error_step = {"kind": "error", "n": step_num, "error": error}
                             st.session_state.agent_steps.append(error_step)
