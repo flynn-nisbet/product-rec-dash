@@ -78,6 +78,7 @@ def get_data():
     ELEMENT_DATE_CANDIDATES = ["call_date", "event_date", "event_ts", "created_at", "_timeStamp", "timestamp"]
 
     GCV_V2_COL_CANDIDATES = ["gcv_v2"]
+    ORDER_SUPPLIER_COL_CANDIDATES = ["supplier_name", "partner_name", "brand_name"]
 
     TARGET_CENTER_LOCATIONS = ["Durban", "Jamaica", "Charlotte"]
 
@@ -621,11 +622,17 @@ def get_data():
 
     with StepTimer(10, "Building sold-product canonical keys + rec noterm keys for sale_type (step 4F)"):
 
+        order_supplier_col = pick_first_existing_column(orders_sdf, ORDER_SUPPLIER_COL_CANDIDATES)
+
+        _sold_canon_select_cols = ["call_id", "product_id", "product_name"]
+        if order_supplier_col:
+            _sold_canon_select_cols.append(order_supplier_col)
+
         # Canonicalize sold product name from v_orders, strip term
         # One row per call_id — take first order consistent with existing logic
         sold_product_canon_sdf = (
             orders_sdf
-            .select("call_id", "product_name")
+            .select(*_sold_canon_select_cols)
             .where(F.col("call_id").isNotNull())
             .where(F.col("product_name").isNotNull())
             # Step 1: lowercase and remove non-alphanumeric (except spaces)
@@ -644,7 +651,30 @@ def get_data():
                 F.regexp_replace(F.col("product_canon"), r"\s+\d+$", ""))
             .withColumn("rn", F.row_number().over(Window.partitionBy("call_id").orderBy("call_id")))
             .where(F.col("rn") == 1)
-            .select("call_id", "sold_product_canon_noterm")
+        )
+
+        if order_supplier_col:
+            sold_product_canon_sdf = sold_product_canon_sdf.withColumn(
+                "sold_partner_name",
+                F.col(order_supplier_col),
+            ).drop(order_supplier_col)
+        else:
+            # No supplier/partner column on v_orders — resolve supplier from plan masterlist
+            # (same plan rows that define plan_canonical_key in step 9), keyed by product_id.
+            sold_product_canon_sdf = sold_product_canon_sdf.join(
+                masterlist_sdf.select(
+                    F.col("plan_id"),
+                    F.col("supplier_name").alias("sold_partner_name"),
+                ),
+                F.col("product_id") == F.col("plan_id"),
+                how="left",
+            ).drop("plan_id")
+
+        sold_product_canon_sdf = sold_product_canon_sdf.select(
+            "call_id",
+            "sold_product_canon_noterm",
+            F.col("product_name").alias("sold_plan_name"),
+            "sold_partner_name",
         )
 
         # Points for the sold product — used for Silver threshold in sale_type
@@ -1036,6 +1066,8 @@ def get_data():
         "first_pitch_type",       # TODO: replace when enrichment table is reliable
         "pitch_types_in_order",   # TODO: replace when enrichment table is reliable
         "sale_type",              # now derived from v_orders, not enrichment table
+        "sold_plan_name",
+        "sold_partner_name",
         "first_pitch_plan_points",
         # Exclusion audit columns
         "in_arcadia_target",
@@ -1091,6 +1123,8 @@ def get_data():
             "first_pitch_type",       # TODO: replace when enrichment table is reliable
             "pitch_types_in_order",   # TODO: replace when enrichment table is reliable
             "sale_type",              # now derived from v_orders, not enrichment table
+            "sold_plan_name",
+            "sold_partner_name",
             "first_pitch_plan_points",
             # Exclusion audit columns
             "in_arcadia_target",
