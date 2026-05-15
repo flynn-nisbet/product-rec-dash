@@ -10,6 +10,8 @@ import streamlit as st
 
 # Persisted choice: first option is default (Dark) on first visit.
 THEME_RADIO_KEY = "product_rec_app_theme"
+# Boolean widget state; kept in sync with THEME_RADIO_KEY for is_light_theme / URL restore.
+THEME_TOGGLE_KEY = "product_rec_theme_light_toggle"
 # Survives full-page reload when syncing Streamlit host theme (session_state resets on reload).
 THEME_QUERY_KEY = "product_rec_theme"
 _THEME_URL_SIG_KEY = "_product_rec_theme_url_sig"
@@ -17,7 +19,7 @@ _THEME_URL_SIG_KEY = "_product_rec_theme_url_sig"
 
 def restore_theme_from_query_params() -> None:
     """After host-theme sync, the browser opens ``?product_rec_theme=light|dark`` so we can restore
-    the sidebar radio — a hard reload clears widget state back to default Dark.
+    the sidebar theme control — a hard reload clears widget state back to default Dark.
 
     We only apply when the query value **changes** so a lingering ``?product_rec_theme=light`` does not
     override the user after they switch back to Dark."""
@@ -36,8 +38,10 @@ def restore_theme_from_query_params() -> None:
         return
     if s in ("light", "l"):
         st.session_state[THEME_RADIO_KEY] = "Light"
+        st.session_state[THEME_TOGGLE_KEY] = True
     else:
         st.session_state[THEME_RADIO_KEY] = "Dark"
+        st.session_state[THEME_TOGGLE_KEY] = False
     st.session_state[_THEME_URL_SIG_KEY] = sig
 
 
@@ -47,7 +51,9 @@ def init_browser_query_state() -> None:
 
 
 def is_light_theme() -> bool:
-    """True when the user selected Light in the sidebar theme control."""
+    """True when the user selected Light (toggle on or legacy THEME_RADIO_KEY)."""
+    if st.session_state.get(THEME_TOGGLE_KEY) is not None:
+        return bool(st.session_state.get(THEME_TOGGLE_KEY))
     return st.session_state.get(THEME_RADIO_KEY, "Dark") == "Light"
 
 
@@ -76,15 +82,16 @@ def period_comparison_delta_style(pct_num: float, neutral_abs: float = 3.0) -> s
 
 
 def render_app_theme_toggle() -> str:
-    """Sidebar control: Dark (default) or Light. Returns current selection (no visible label)."""
-    return st.radio(
-        "Theme",
-        ["Dark", "Light"],
-        horizontal=True,
-        key=THEME_RADIO_KEY,
-        label_visibility="collapsed",
-        help="Page and chart colors: Dark or Light.",
+    """Sidebar: Light mode toggle. Syncs THEME_RADIO_KEY for charts/CSS. Returns 'Light' or 'Dark'."""
+    if THEME_TOGGLE_KEY not in st.session_state:
+        st.session_state[THEME_TOGGLE_KEY] = st.session_state.get(THEME_RADIO_KEY, "Dark") == "Light"
+    light = st.toggle(
+        "Light mode",
+        key=THEME_TOGGLE_KEY,
+        help="On: light theme. Off: dark theme for page and charts.",
     )
+    st.session_state[THEME_RADIO_KEY] = "Light" if light else "Dark"
+    return st.session_state[THEME_RADIO_KEY]
 
 
 def _root_variables(light: bool) -> str:
