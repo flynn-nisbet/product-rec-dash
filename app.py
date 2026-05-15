@@ -7,6 +7,8 @@ import hashlib
 import plotly.graph_objects as go
 from datetime import date, timedelta
 from openai import OpenAI as _OpenAI
+
+from ai_analyst_prompt import AI_ANALYST_SYSTEM_PROMPT
 from dotenv import load_dotenv
 import traceback as _tb
 import json as _json
@@ -230,18 +232,75 @@ def default_period_comparison_week_ranges(
     **Pre** is the four Monday–Sunday weeks immediately before that week (28 consecutive days,
     ending the Sunday before the post week starts).
 
-    Each bound is clipped to ``[data_min, data_max]`` so values stay valid for ``st.date_input``.
+    Ranges are clipped to ``[data_min, data_max]`` with **pre strictly before post** and
+    ``pre_start <= pre_end`` so ``st.date_input`` always receives valid ordered tuples.
     """
+    if data_max < data_min:
+        data_min, data_max = data_max, data_min
+
     last_sun = data_max - timedelta(days=(data_max.weekday() + 1) % 7)
     post_start = last_sun - timedelta(days=6)
     post_end = last_sun
-    pre_end = post_start - timedelta(days=1)
-    pre_start = post_start - timedelta(days=28)
     post_start = max(post_start, data_min)
     post_end = min(post_end, data_max)
+    if post_start > post_end:
+        post_start = post_end = data_max
+
+    pre_end = post_start - timedelta(days=1)
+    pre_start = pre_end - timedelta(days=27)
     pre_start = max(pre_start, data_min)
-    pre_end = min(pre_end, data_max)
+    pre_end = min(pre_end, data_max, post_start - timedelta(days=1))
+    if pre_start > pre_end:
+        pre_end = min(post_start - timedelta(days=1), data_max)
+        pre_start = max(data_min, pre_end - timedelta(days=27))
+    if pre_start > pre_end:
+        pre_start = pre_end = max(data_min, min(pre_end, post_start - timedelta(days=1)))
+    if pre_end >= post_start:
+        pre_end = post_start - timedelta(days=1)
+        pre_start = max(data_min, pre_end - timedelta(days=27))
+        if pre_start > pre_end:
+            pre_start = pre_end
     return (pre_start, pre_end), (post_start, post_end)
+
+
+def streamlit_safe_period_defaults(
+    data_max: date, data_min: date
+) -> tuple[tuple[date, date], tuple[date, date]]:
+    """Pre/Post ranges for ``st.date_input`` that always lie in ``[data_min, data_max]``.
+
+    ``default_period_comparison_week_ranges`` can produce pre/post edges outside a **narrow**
+    filtered date window (e.g. sidebar filter). Streamlit requires every date in ``value=`` to
+    satisfy ``min_value``/``max_value``. When clipped ranges overlap or invert, this falls back
+    to splitting the available span (first half vs second half).
+    """
+    if data_max < data_min:
+        data_min, data_max = data_max, data_min
+    if data_min == data_max:
+        t = (data_min, data_max)
+        return t, t
+
+    pre_t, post_t = default_period_comparison_week_ranges(data_max, data_min)
+
+    def _clip_pair(t: tuple[date, date]) -> tuple[date, date] | None:
+        s, e = sorted(t)
+        a = max(data_min, min(s, data_max))
+        b = max(data_min, min(e, data_max))
+        if a <= b:
+            return (a, b)
+        return None
+
+    pre = _clip_pair(pre_t)
+    post = _clip_pair(post_t)
+    if pre is not None and post is not None and pre[1] < post[0]:
+        return pre, post
+
+    n = (data_max - data_min).days + 1
+    k = max(1, n // 2)
+    pre_end = data_min + timedelta(days=k - 1)
+    post_start = pre_end + timedelta(days=1)
+    if post_start > data_max:
+        return (data_min, data_min), (data_max, data_max)
+    return (data_min, pre_end), (post_start, data_max)
 
 
 def _extract_ranked_slot_product(series_str, slot_idx: int):
@@ -686,136 +745,6 @@ with tab_model:
             height=dataframe_display_height(len(rec_pivot)),
         )
         table_export_row(rec_pivot, "recommendation_mix_pivot.csv", key_suffix="model_rec_mix")
-
-        st.divider()
-        st.subheader("Custom period comparison — recommendation mix")
-        st.caption(
-            "Compare **share of calls (%)** for each category between a **Pre** and **Post** window. "
-            "Defaults reset when the in-view date range changes: **Post** = latest full Mon–Sun week; "
-            "**Pre** = the four Mon–Sun weeks before that (same preset as Agent Behavior)."
-        )
-        df_mcmp = df.dropna(subset=["call_date"]).copy()
-        if df_mcmp.empty:
-            st.caption("No calls in the current sidebar + date filter for this comparison.")
-        else:
-            mod_min = pd.to_datetime(df_mcmp["call_date"].min()).date()
-            mod_max = pd.to_datetime(df_mcmp["call_date"].max()).date()
-            _mm_sig = (mod_min, mod_max, len(df_mcmp))
-            if st.session_state.get("model_mix_cmp_sig") != _mm_sig:
-                _m_pre, _m_post = default_period_comparison_week_ranges(mod_max, mod_min)
-                st.session_state["model_mix_cmp_pre_range"] = _m_pre
-                st.session_state["model_mix_cmp_post_range"] = _m_post
-                st.session_state["model_mix_cmp_sig"] = _mm_sig
-
-            prod_col_m = next(
-                (c for c in ("recommended_in_order", "pitches_canonical_in_order", "pitches_in_order") if c in df_mcmp.columns),
-                None,
-            )
-            mix_mode_opts = ["Plan type (#1 recommendation)"]
-            if prod_col_m is not None:
-                mix_mode_opts.append("Product (ranked pitch slot)")
-            mix_cmp_mode = st.radio(
-                "Mix to compare",
-                mix_mode_opts,
-                horizontal=True,
-                key="model_mix_cmp_mode",
-            )
-            slot_idx_m = 0
-            if mix_cmp_mode.startswith("Product"):
-                slot_cmp = st.selectbox(
-                    "Pitch slot",
-                    ["Diamond", "Gold"],
-                    index=0,
-                    key="model_mix_cmp_slot",
-                )
-                slot_idx_m = 0 if slot_cmp == "Diamond" else 1
-
-            mo_c1, mo_c2 = st.columns(2)
-            with mo_c1:
-                mo_pre = st.date_input(
-                    "Pre period",
-                    min_value=mod_min,
-                    max_value=mod_max,
-                    key="model_mix_cmp_pre_range",
-                )
-            with mo_c2:
-                mo_post = st.date_input(
-                    "Post period",
-                    min_value=mod_min,
-                    max_value=mod_max,
-                    key="model_mix_cmp_post_range",
-                )
-
-            def _mo_slice(d0: date, d1: date):
-                m = (df_mcmp["call_date"].dt.date >= d0) & (df_mcmp["call_date"].dt.date <= d1)
-                return df_mcmp.loc[m]
-
-            def _mo_share_plan(sub: pd.DataFrame) -> pd.Series:
-                if len(sub) == 0 or "top_recommended_plan_type" not in sub.columns:
-                    return pd.Series(dtype=float)
-                tot = len(sub)
-                vc = sub["top_recommended_plan_type"].value_counts(dropna=True)
-                return (vc / tot * 100).sort_values(ascending=False)
-
-            def _mo_share_product(sub: pd.DataFrame, col: str, idx: int) -> pd.Series:
-                if len(sub) == 0:
-                    return pd.Series(dtype=float)
-                tot = len(sub)
-                sprod = sub[col].apply(lambda x, i=idx: _extract_ranked_slot_product(x, i))
-                vc = sprod.value_counts(dropna=True)
-                return (vc / tot * 100).sort_values(ascending=False)
-
-            def _mo_color_pp(val):
-                try:
-                    x = float(val)
-                except (TypeError, ValueError):
-                    return ""
-                if pd.isna(x):
-                    return ""
-                return theme.period_comparison_delta_style(x, neutral_abs=2.0)
-
-            if len(mo_pre) == 2 and len(mo_post) == 2:
-                pre_m = _mo_slice(mo_pre[0], mo_pre[1])
-                post_m = _mo_slice(mo_post[0], mo_post[1])
-                pre_lab = f"{mo_pre[0].strftime('%-m/%-d')}-{mo_pre[1].strftime('%-m/%-d')}"
-                post_lab = f"{mo_post[0].strftime('%-m/%-d')}-{mo_post[1].strftime('%-m/%-d')}"
-
-                if mix_cmp_mode.startswith("Plan"):
-                    s_pre, s_post = _mo_share_plan(pre_m), _mo_share_plan(post_m)
-                    idx_m = s_pre.index.union(s_post.index)
-                    axis_lbl = "Plan type"
-                    export_fn = "model_outputs_plan_mix_period_compare.csv"
-                    export_key = "model_mix_cmp_plan"
-                else:
-                    s_pre = _mo_share_product(pre_m, prod_col_m, slot_idx_m)
-                    s_post = _mo_share_product(post_m, prod_col_m, slot_idx_m)
-                    idx_m = s_pre.index.union(s_post.index)
-                    axis_lbl = "Product"
-                    export_fn = "model_outputs_product_mix_period_compare.csv"
-                    export_key = "model_mix_cmp_prod"
-
-                t_m = pd.DataFrame(
-                    {
-                        f"Share % ({pre_lab})": s_pre.reindex(idx_m).fillna(0).round(1),
-                        f"Share % ({post_lab})": s_post.reindex(idx_m).fillna(0).round(1),
-                    }
-                )
-                _m_c0, _m_c1 = t_m.columns[0], t_m.columns[1]
-                t_m["Δ (pp)"] = (t_m[_m_c1] - t_m[_m_c0]).round(1)
-                t_m = t_m.sort_values(_m_c1, ascending=False).rename_axis(axis_lbl).reset_index()
-
-                sty_m = t_m.style.map(_mo_color_pp, subset=["Δ (pp)"])
-                sty_m = sty_m.set_properties(**{"text-align": "right"}, subset=[_m_c0, _m_c1, "Δ (pp)"])
-                sty_m = sty_m.set_properties(**{"text-align": "left"}, subset=[axis_lbl])
-                st.dataframe(
-                    sty_m,
-                    use_container_width=True,
-                    hide_index=True,
-                    height=dataframe_display_height(min(len(t_m), 40)),
-                )
-                table_export_row(t_m, export_fn, key_suffix=export_key)
-            else:
-                st.caption("Select full pre and post date ranges to populate the comparison table.")
     else:
         st.info("call_date or top_recommended_plan_type column missing.")
 
@@ -913,12 +842,186 @@ with tab_model:
                 yaxis_title=f"% of calls with product in {pm_slot} slot",
             )
             st.plotly_chart(fig_pm, use_container_width=True)
+            pm_pivot = (
+                pm_ts.pivot_table(index=slot_product_col, columns="period_display", values="pct", aggfunc="mean")
+                .fillna(0)
+                .round(1)
+                .reset_index()
+                .rename(columns={slot_product_col: "Product"})
+            )
+            pm_disp = pm_pivot.copy()
+            for _col in pm_disp.columns[1:]:
+                pm_disp[_col] = pm_disp[_col].astype(str) + "%"
+            st.caption(f"Product mix ({pm_slot} slot) — share of calls (%) per period (same scope as the chart above)")
+            st.dataframe(
+                pm_disp,
+                use_container_width=True,
+                hide_index=True,
+                height=dataframe_display_height(len(pm_disp)),
+            )
+            table_export_row(pm_disp, "product_level_rec_mix_pivot.csv", key_suffix="model_pm_mix")
             if not pm_products:
                 st.caption(f"Showing top 10 products by volume in the {pm_slot} slot. Use the filter above to select specific products.")
         else:
             st.info("No data available for the selected slot / product combination.")
     else:
         st.info("Product recommendation column not found. Expected one of: recommended_in_order, pitches_canonical_in_order, pitches_in_order.")
+
+    st.divider()
+    st.subheader("Custom period comparison — recommendation mix")
+    st.caption(
+        "Compare **share of calls (%)** for each category between a **Pre** and **Post** window. "
+        "Pickers span the **full** `call_date` range in the extract (sidebar **date** filter does not apply). "
+        "Counts still use other sidebar filters only. Defaults: **Post** = latest full Mon–Sun week vs raw max; "
+        "**Pre** = four Mon–Sun weeks before that. **% change vs pre** is relative to the pre-period share."
+    )
+    df_mcmp = df_nodatefilter.dropna(subset=["call_date"]).copy()
+    if "call_date" not in df_raw.columns or df_raw["call_date"].isna().all():
+        st.caption("Raw `call_date` is missing for period bounds.")
+    elif df_mcmp.empty:
+        st.caption("No calls match the current sidebar filters (excluding date) for this comparison.")
+    else:
+        mod_min = pd.to_datetime(df_raw["call_date"].min()).date()
+        mod_max = pd.to_datetime(df_raw["call_date"].max()).date()
+        _mm_sig = (mod_min, mod_max, len(df_mcmp))
+        if st.session_state.get("model_mix_cmp_sig") != _mm_sig:
+            st.session_state.pop("model_mix_cmp_pre_range", None)
+            st.session_state.pop("model_mix_cmp_post_range", None)
+            st.session_state["model_mix_cmp_sig"] = _mm_sig
+
+        _mo_pre_default, _mo_post_default = streamlit_safe_period_defaults(mod_max, mod_min)
+
+        prod_col_m = next(
+            (c for c in ("recommended_in_order", "pitches_canonical_in_order", "pitches_in_order") if c in df_mcmp.columns),
+            None,
+        )
+        mix_mode_opts = ["Plan type (#1 recommendation)"]
+        if prod_col_m is not None:
+            mix_mode_opts.append("Product (ranked pitch slot)")
+        mix_cmp_mode = st.radio(
+            "Mix to compare",
+            mix_mode_opts,
+            horizontal=True,
+            key="model_mix_cmp_mode",
+        )
+        slot_idx_m = 0
+        if mix_cmp_mode.startswith("Product"):
+            slot_cmp = st.selectbox(
+                "Pitch slot",
+                ["Diamond", "Gold"],
+                index=0,
+                key="model_mix_cmp_slot",
+            )
+            slot_idx_m = 0 if slot_cmp == "Diamond" else 1
+
+        mo_c1, mo_c2 = st.columns(2)
+        with mo_c1:
+            mo_pre = st.date_input(
+                "Pre period",
+                value=_mo_pre_default,
+                min_value=mod_min,
+                max_value=mod_max,
+                key="model_mix_cmp_pre_range",
+            )
+        with mo_c2:
+            mo_post = st.date_input(
+                "Post period",
+                value=_mo_post_default,
+                min_value=mod_min,
+                max_value=mod_max,
+                key="model_mix_cmp_post_range",
+            )
+
+        def _mo_slice(d0: date, d1: date):
+            lo, hi = sorted((d0, d1))
+            m = (df_mcmp["call_date"].dt.date >= lo) & (df_mcmp["call_date"].dt.date <= hi)
+            return df_mcmp.loc[m]
+
+        def _mo_share_plan(sub: pd.DataFrame) -> pd.Series:
+            if len(sub) == 0 or "top_recommended_plan_type" not in sub.columns:
+                return pd.Series(dtype=float)
+            tot = len(sub)
+            vc = sub["top_recommended_plan_type"].value_counts(dropna=True)
+            return (vc / tot * 100).sort_values(ascending=False)
+
+        def _mo_share_product(sub: pd.DataFrame, col: str, idx: int) -> pd.Series:
+            if len(sub) == 0:
+                return pd.Series(dtype=float)
+            tot = len(sub)
+            sprod = sub[col].apply(lambda x, i=idx: _extract_ranked_slot_product(x, i))
+            vc = sprod.value_counts(dropna=True)
+            return (vc / tot * 100).sort_values(ascending=False)
+
+        def _mo_color_pct_chg(val):
+            try:
+                x = float(val)
+            except (TypeError, ValueError):
+                return ""
+            if pd.isna(x):
+                return ""
+            return theme.period_comparison_delta_style(x, neutral_abs=10.0)
+
+        if len(mo_pre) == 2 and len(mo_post) == 2:
+            pre_m = _mo_slice(mo_pre[0], mo_pre[1])
+            post_m = _mo_slice(mo_post[0], mo_post[1])
+            pre_lab = f"{sorted(mo_pre)[0].strftime('%-m/%-d')}-{sorted(mo_pre)[1].strftime('%-m/%-d')}"
+            post_lab = f"{sorted(mo_post)[0].strftime('%-m/%-d')}-{sorted(mo_post)[1].strftime('%-m/%-d')}"
+
+            s_pre = None
+            s_post = None
+            idx_m = None
+            axis_lbl = ""
+            export_fn = ""
+            export_key = ""
+
+            if mix_cmp_mode.startswith("Plan"):
+                if "top_recommended_plan_type" not in df_mcmp.columns:
+                    st.info("Column top_recommended_plan_type is missing for plan-type comparison.")
+                else:
+                    s_pre = _mo_share_plan(pre_m)
+                    s_post = _mo_share_plan(post_m)
+                    idx_m = s_pre.index.union(s_post.index)
+                    axis_lbl = "Plan type"
+                    export_fn = "model_outputs_plan_mix_period_compare.csv"
+                    export_key = "model_mix_cmp_plan"
+            else:
+                if prod_col_m is None:
+                    st.info("Product list column not found for product mix comparison.")
+                else:
+                    s_pre = _mo_share_product(pre_m, prod_col_m, slot_idx_m)
+                    s_post = _mo_share_product(post_m, prod_col_m, slot_idx_m)
+                    idx_m = s_pre.index.union(s_post.index)
+                    axis_lbl = "Product"
+                    export_fn = "model_outputs_product_mix_period_compare.csv"
+                    export_key = "model_mix_cmp_prod"
+
+            if s_pre is not None and s_post is not None and idx_m is not None:
+                t_m = pd.DataFrame(
+                    {
+                        f"Share % ({pre_lab})": s_pre.reindex(idx_m).fillna(0).round(1),
+                        f"Share % ({post_lab})": s_post.reindex(idx_m).fillna(0).round(1),
+                    }
+                )
+                _m_c0, _m_c1 = t_m.columns[0], t_m.columns[1]
+                _pre_v = t_m[_m_c0].astype(float)
+                _post_v = t_m[_m_c1].astype(float)
+                t_m["% change vs pre"] = (
+                    (_post_v / _pre_v.replace(0, float("nan")) - 1.0).mul(100).round(1)
+                )
+                t_m = t_m.sort_values(_m_c1, ascending=False).rename_axis(axis_lbl).reset_index()
+
+                sty_m = t_m.style.map(_mo_color_pct_chg, subset=["% change vs pre"])
+                sty_m = sty_m.set_properties(**{"text-align": "right"}, subset=[_m_c0, _m_c1, "% change vs pre"])
+                sty_m = sty_m.set_properties(**{"text-align": "left"}, subset=[axis_lbl])
+                st.dataframe(
+                    sty_m,
+                    use_container_width=True,
+                    hide_index=True,
+                    height=dataframe_display_height(min(len(t_m), 40)),
+                )
+                table_export_row(t_m, export_fn, key_suffix=export_key)
+        else:
+            st.caption("Select full pre and post date ranges to populate the comparison table.")
 
     st.divider()
 
@@ -1566,7 +1669,7 @@ with tab_agent:
         raw_min = pd.to_datetime(df_raw["call_date"].min()).date()
         raw_max = pd.to_datetime(df_raw["call_date"].max()).date()
 
-        (_pre_def_start, _pre_def_end), (_post_def_start, _post_def_end) = default_period_comparison_week_ranges(
+        (_pre_def_start, _pre_def_end), (_post_def_start, _post_def_end) = streamlit_safe_period_defaults(
             raw_max, raw_min
         )
 
@@ -2259,27 +2362,51 @@ with tab_sale_mix:
             st.divider()
             st.subheader("Period-over-period comparison")
             st.caption(
-                "Select two windows inside the filtered converting-call date range. "
-                "Defaults reset when that range changes: **Post** = latest full Mon–Sun week; "
-                "**Pre** = the four Mon–Sun weeks before that. Shares are % of sales within each window. "
-                "Δ (pp) is post minus pre; delta shading uses the same green / yellow / red convention as Agent Behavior."
+                "Choose **Partners** or **Plans** for one comparison table. "
+                "Pickers span the **full** `call_date` range in the extract (sidebar **date** filter does not apply); "
+                "shares still use converting calls with other sidebar filters only. "
+                "Defaults: **Post** = latest full Mon–Sun week vs raw max; **Pre** = four Mon–Sun weeks before that. "
+                "**% change vs pre** is relative to the pre-period share."
             )
 
-            sm_data_min = pd.to_datetime(sm_sales["call_date"].min()).date()
-            sm_data_max = pd.to_datetime(sm_sales["call_date"].max()).date()
-            _sm_cmp_sig = (sm_data_min, sm_data_max, len(sm_sales))
+            sm_sales_cmp = (
+                df_nodatefilter[df_nodatefilter["order_count"].fillna(0) > 0]
+                .dropna(subset=["call_date"])
+                .copy()
+            )
+            sm_sales_cmp["partner"] = _sm_display_str(sm_sales_cmp["sold_partner_name"])
+            sm_sales_cmp["plan"] = _sm_display_str(sm_sales_cmp["sold_plan_name"])
+            sm_sales_cmp["partner_grp"] = _sm_bucket_selected_other(
+                sm_sales_cmp["partner"], _sel_p, include_other=include_other_partners
+            )
+            sm_sales_cmp["plan_grp"] = _sm_bucket_selected_other(
+                sm_sales_cmp["plan"], _sel_pl, include_other=include_other_plans
+            )
+
+            sm_data_min = pd.to_datetime(df_raw["call_date"].min()).date()
+            sm_data_max = pd.to_datetime(df_raw["call_date"].max()).date()
+            _sm_cmp_sig = (sm_data_min, sm_data_max, len(sm_sales_cmp))
             if st.session_state.get("sale_mix_cmp_date_sig") != _sm_cmp_sig:
-                (_pre_def_start, _pre_def_end), (_post_def_start, _post_def_end) = default_period_comparison_week_ranges(
-                    sm_data_max, sm_data_min
-                )
-                st.session_state["sale_mix_cmp_pre_range"] = (_pre_def_start, _pre_def_end)
-                st.session_state["sale_mix_cmp_post_range"] = (_post_def_start, _post_def_end)
+                st.session_state.pop("sale_mix_cmp_pre_range", None)
+                st.session_state.pop("sale_mix_cmp_post_range", None)
                 st.session_state["sale_mix_cmp_date_sig"] = _sm_cmp_sig
+
+            _sm_pre_default, _sm_post_default = streamlit_safe_period_defaults(
+                sm_data_max, sm_data_min
+            )
+
+            sale_cmp_dim = st.radio(
+                "Compare",
+                ["Partners", "Plans"],
+                horizontal=True,
+                key="sale_mix_cmp_dim",
+            )
 
             sm_po1, sm_po2 = st.columns(2)
             with sm_po1:
                 sm_pre_range = st.date_input(
                     "Pre period",
+                    value=_sm_pre_default,
                     min_value=sm_data_min,
                     max_value=sm_data_max,
                     key="sale_mix_cmp_pre_range",
@@ -2287,90 +2414,81 @@ with tab_sale_mix:
             with sm_po2:
                 sm_post_range = st.date_input(
                     "Post period",
+                    value=_sm_post_default,
                     min_value=sm_data_min,
                     max_value=sm_data_max,
                     key="sale_mix_cmp_post_range",
                 )
 
             def _sm_slice_sm_sales(d0: date, d1: date):
-                m = (sm_sales["call_date"].dt.date >= d0) & (sm_sales["call_date"].dt.date <= d1)
-                return sm_sales.loc[m]
+                lo, hi = sorted((d0, d1))
+                m = (sm_sales_cmp["call_date"].dt.date >= lo) & (sm_sales_cmp["call_date"].dt.date <= hi)
+                return sm_sales_cmp.loc[m]
 
             def _sm_share_mix(sub: pd.DataFrame, grp_col: str) -> pd.Series:
                 if len(sub) == 0:
                     return pd.Series(dtype=float)
                 return sub[grp_col].value_counts(normalize=True).mul(100).sort_values(ascending=False)
 
-            def _color_pp_delta_cell(val):
+            def _sm_color_pct_chg(val):
                 try:
                     x = float(val)
                 except (TypeError, ValueError):
                     return ""
                 if pd.isna(x):
                     return ""
-                return theme.period_comparison_delta_style(x, neutral_abs=2.0)
+                return theme.period_comparison_delta_style(x, neutral_abs=10.0)
 
             if len(sm_pre_range) == 2 and len(sm_post_range) == 2:
                 pre_s = _sm_slice_sm_sales(sm_pre_range[0], sm_pre_range[1])
                 post_s = _sm_slice_sm_sales(sm_post_range[0], sm_post_range[1])
-                pre_lab = f"{sm_pre_range[0].strftime('%-m/%-d')}-{sm_pre_range[1].strftime('%-m/%-d')}"
-                post_lab = f"{sm_post_range[0].strftime('%-m/%-d')}-{sm_post_range[1].strftime('%-m/%-d')}"
+                pre_lo, pre_hi = sorted(sm_pre_range)
+                post_lo, post_hi = sorted(sm_post_range)
+                pre_lab = f"{pre_lo.strftime('%-m/%-d')}-{pre_hi.strftime('%-m/%-d')}"
+                post_lab = f"{post_lo.strftime('%-m/%-d')}-{post_hi.strftime('%-m/%-d')}"
 
-                pre_sp = pre_s.dropna(subset=["partner_grp"]) if not include_other_partners else pre_s
-                post_sp = post_s.dropna(subset=["partner_grp"]) if not include_other_partners else post_s
-                pr_pre = _sm_share_mix(pre_sp, "partner_grp")
-                pr_post = _sm_share_mix(post_sp, "partner_grp")
-                idx_p = pr_pre.index.union(pr_post.index)
-                t_pr = pd.DataFrame(
+                if sale_cmp_dim == "Partners":
+                    pre_ss = pre_s.dropna(subset=["partner_grp"]) if not include_other_partners else pre_s
+                    post_ss = post_s.dropna(subset=["partner_grp"]) if not include_other_partners else post_s
+                    grp_col = "partner_grp"
+                    axis_lbl = "Partner"
+                    export_fn = "sale_mix_partner_period_compare.csv"
+                    export_key = "sale_mix_popp"
+                else:
+                    pre_ss = pre_s.dropna(subset=["plan_grp"]) if not include_other_plans else pre_s
+                    post_ss = post_s.dropna(subset=["plan_grp"]) if not include_other_plans else post_s
+                    grp_col = "plan_grp"
+                    axis_lbl = "Sold plan"
+                    export_fn = "sale_mix_plan_period_compare.csv"
+                    export_key = "sale_mix_popl"
+
+                sh_pre = _sm_share_mix(pre_ss, grp_col)
+                sh_post = _sm_share_mix(post_ss, grp_col)
+                idx_x = sh_pre.index.union(sh_post.index)
+                t_cmp = pd.DataFrame(
                     {
-                        f"Share % ({pre_lab})": pr_pre.reindex(idx_p).fillna(0).round(1),
-                        f"Share % ({post_lab})": pr_post.reindex(idx_p).fillna(0).round(1),
+                        f"Share % ({pre_lab})": sh_pre.reindex(idx_x).fillna(0).round(1),
+                        f"Share % ({post_lab})": sh_post.reindex(idx_x).fillna(0).round(1),
                     }
                 )
-                _c_pre, _c_post = t_pr.columns[0], t_pr.columns[1]
-                t_pr["Δ (pp)"] = (t_pr[_c_post] - t_pr[_c_pre]).round(1)
-                t_pr = t_pr.sort_values(_c_post, ascending=False).rename_axis("Partner").reset_index()
+                _cp0, _cp1 = t_cmp.columns[0], t_cmp.columns[1]
+                _pv0 = t_cmp[_cp0].astype(float)
+                _pv1 = t_cmp[_cp1].astype(float)
+                t_cmp["% change vs pre"] = ((_pv1 / _pv0.replace(0, float("nan")) - 1.0).mul(100).round(1))
+                t_cmp = t_cmp.sort_values(_cp1, ascending=False).rename_axis(axis_lbl).reset_index()
 
-                sty_pr = t_pr.style.map(_color_pp_delta_cell, subset=["Δ (pp)"])
-                sty_pr = sty_pr.set_properties(**{"text-align": "right"}, subset=[_c_pre, _c_post, "Δ (pp)"])
-                sty_pr = sty_pr.set_properties(**{"text-align": "left"}, subset=["Partner"])
-                st.markdown("#### Partners (share of sales)")
+                sty_cmp = t_cmp.style.map(_sm_color_pct_chg, subset=["% change vs pre"])
+                sty_cmp = sty_cmp.set_properties(**{"text-align": "right"}, subset=[_cp0, _cp1, "% change vs pre"])
+                sty_cmp = sty_cmp.set_properties(**{"text-align": "left"}, subset=[axis_lbl])
                 st.dataframe(
-                    sty_pr,
+                    sty_cmp,
                     use_container_width=True,
                     hide_index=True,
-                    height=dataframe_display_height(len(t_pr)),
+                    height=dataframe_display_height(min(len(t_cmp), 40)),
                 )
-                table_export_row(t_pr, "sale_mix_partner_period_compare.csv", key_suffix="sale_mix_popp")
-
-                pre_sl = pre_s.dropna(subset=["plan_grp"]) if not include_other_plans else pre_s
-                post_sl = post_s.dropna(subset=["plan_grp"]) if not include_other_plans else post_s
-                pl_pre = _sm_share_mix(pre_sl, "plan_grp")
-                pl_post = _sm_share_mix(post_sl, "plan_grp")
-                idx_l = pl_pre.index.union(pl_post.index)
-                t_pl = pd.DataFrame(
-                    {
-                        f"Share % ({pre_lab})": pl_pre.reindex(idx_l).fillna(0).round(1),
-                        f"Share % ({post_lab})": pl_post.reindex(idx_l).fillna(0).round(1),
-                    }
-                )
-                _pl_c0, _pl_c1 = t_pl.columns[0], t_pl.columns[1]
-                t_pl["Δ (pp)"] = (t_pl[_pl_c1] - t_pl[_pl_c0]).round(1)
-                t_pl = t_pl.sort_values(_pl_c1, ascending=False).rename_axis("Sold plan").reset_index()
-
-                sty_pl = t_pl.style.map(_color_pp_delta_cell, subset=["Δ (pp)"])
-                sty_pl = sty_pl.set_properties(**{"text-align": "right"}, subset=[_pl_c0, _pl_c1, "Δ (pp)"])
-                sty_pl = sty_pl.set_properties(**{"text-align": "left"}, subset=["Sold plan"])
-                st.markdown("#### Sold plans (share of sales)")
-                st.dataframe(
-                    sty_pl,
-                    use_container_width=True,
-                    hide_index=True,
-                    height=dataframe_display_height(min(len(t_pl), 40)),
-                )
-                table_export_row(t_pl, "sale_mix_plan_period_compare.csv", key_suffix="sale_mix_popl")
+                table_export_row(t_cmp, export_fn, key_suffix=export_key)
             else:
-                st.caption("Select full pre and post date ranges to populate the comparison tables.")
+                st.caption("Select full pre and post date ranges to populate the comparison table.")
 
 
 
@@ -2505,437 +2623,131 @@ with tab_agent_level:
         st.info(f"Columns missing for agent table: {', '.join(sorted(missing))}")
 
 
+_AI_PRIOR_TOOL_OMITTED = (
+    "[prior result omitted — use only the is_final result above]"
+)
+
+_AI_RUNCODE_ERROR_SUFFIX = (
+    "\n\nFix the specific error above. Do not repeat the same code. If the same approach "
+    "has failed twice, try a completely different method."
+)
+
+AI_ANALYST_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "execute_python",
+            "description": (
+                "Execute Python against `df`. Assign final output to `result`. "
+                "Never call print(). pandas=pd, numpy=np, plotly=go/px available. "
+                "Date helpers for WTD/MTD/P4WA: analysis_as_of, analysis_wtd_start, analysis_mtd_start, "
+                "analysis_ytd_start, analysis_p4wa_start, analysis_p4wa_end (datetime.date; analysis_data_max may be None)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string", "description": "Python code assigning to `result`."},
+                    "rationale": {"type": "string", "description": "One sentence: what and why."},
+                    "is_final": {
+                        "type": "boolean",
+                        "description": (
+                            "Set true ONLY on the last tool call before your final answer. "
+                            "When true, your code must produce the single authoritative result "
+                            "your narrative will be based on. You may NOT reference numbers from "
+                            "earlier steps in your final answer — only from this result."
+                        ),
+                    },
+                },
+                "required": ["code", "rationale", "is_final"],
+            },
+        },
+    }
+]
+
+
+def _user_message_is_text_only(m: dict) -> bool:
+    if m.get("role") != "user":
+        return False
+    c = m.get("content")
+    if isinstance(c, str):
+        return True
+    if isinstance(c, list) and c:
+        return all(isinstance(b, dict) and b.get("type") == "text" for b in c)
+    return False
+
+
+def strip_prior_tool_results_keep_final(
+    messages: list[dict],
+    keep_tool_call_id: str,
+    *,
+    placeholder: str = _AI_PRIOR_TOOL_OMITTED,
+) -> None:
+    """Blank prior tool outputs except the is_final tool_call_id (OpenAI tool role messages)."""
+    for m in messages:
+        if m.get("role") == "tool" and m.get("tool_call_id") != keep_tool_call_id:
+            m["content"] = placeholder
+
+
+def truncate_ai_agent_messages(messages: list[dict]) -> list[dict]:
+    """Keep first user message; treat each (assistant w/ tool_calls + matching tool msgs) as one atomic span."""
+    if not messages:
+        return []
+    first_user_i = None
+    for i, m in enumerate(messages):
+        if m.get("role") == "user" and _user_message_is_text_only(m):
+            first_user_i = i
+            break
+    if first_user_i is None:
+        for i, m in enumerate(messages):
+            if m.get("role") == "user":
+                first_user_i = i
+                break
+    if first_user_i is None:
+        return list(messages)
+
+    spans: list[tuple[int, int]] = []
+    i = first_user_i + 1
+    while i < len(messages):
+        m = messages[i]
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            ntc = len(m["tool_calls"])
+            j = i + 1
+            got = 0
+            while j < len(messages) and got < ntc:
+                if messages[j].get("role") != "tool":
+                    break
+                got += 1
+                j += 1
+            if got == ntc:
+                spans.append((i, j - 1))
+                i = j
+                continue
+        i += 1
+
+    if len(spans) <= 4:
+        return list(messages)
+
+    start_keep = spans[-4][0]
+    if start_keep <= first_user_i:
+        return list(messages)
+    return [messages[first_user_i]] + messages[start_keep:]
+
+
+def build_ai_example_questions(_df_raw: pd.DataFrame) -> list[str]:
+    """Short example prompts for the AI Analyst empty state."""
+    return [
+        "Plot Durban's weekly adherence rate since 4/18.",
+        "What is the overall CR across each center?",
+        "Which agents have the highest 1st pitch CR?",
+        "Show GCV/Call by marketing bucket.",
+    ]
+
+
 # ════════════════════════════════════════════════════════════════════════════════
 # TAB 5 — AI ANALYST
 # ════════════════════════════════════════════════════════════════════════════════
 with tab_chat:
 
-    TOOLS = [
-        {
-            "type": "function",
-            "function": {
-                "name": "execute_python",
-                "description": (
-                    "Execute Python against `df`. Assign final output to `result`. "
-                    "Never call print(). pandas=pd, numpy=np, plotly=go/px available. "
-                    "Date helpers for WTD/MTD/P4WA: analysis_as_of, analysis_wtd_start, analysis_mtd_start, "
-                    "analysis_ytd_start, analysis_p4wa_start, analysis_p4wa_end (datetime.date; analysis_data_max may be None)."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "code":      {"type": "string", "description": "Python code assigning to `result`."},
-                        "rationale": {"type": "string", "description": "One sentence: what and why."},
-                        "is_final":  {
-                            "type": "boolean",
-                            "description": (
-                                "Set true ONLY on the last tool call before your final answer. "
-                                "When true, your code must produce the single authoritative result "
-                                "your narrative will be based on. You may NOT reference numbers from "
-                                "earlier steps in your final answer — only from this result."
-                            ),
-                        },
-                    },
-                    "required": ["code", "rationale", "is_final"],
-                },
-            },
-        }
-    ]
-
-    SYSTEM_PROMPT = """You are an autonomous data analyst agent embedded in a call-center sales performance dashboard for an energy retail company. Agents take inbound calls and pitch electricity plans to customers. A machine learning model recommends which plans to pitch on each call.
-
-You have one tool: `execute_python`. Use it as many times as needed to fully answer the user's question.
-
-Workflow:
-1. Think about what data you need and plan your approach.
-2. Call execute_python to explore, filter, aggregate, or compute.
-3. Read the result. Decide if you need another computation to go deeper or validate.
-4. Repeat steps 2-3 as needed.
-5. On your LAST tool call, set is_final=true. That result is the ONLY source your narrative may reference.
-6. Write a clear, structured final answer using only values from the is_final result.
-   - Use markdown tables for comparisons.
-   - Highlight the most important findings first.
-   - Use specific numbers (percentages to 1dp, dollars with commas).
-
-═══════════════════════════════════════════════
-DOMAIN KNOWLEDGE — read this carefully before computing anything
-═══════════════════════════════════════════════
-
-This dashboard and call-level extract are scoped to post-credit, pitch-stage calls only
-(Energy Voice marketplace; Texas deregulated retail). Upstream Compass/IVR, queue, and
-failed-credit populations are out of scope unless the user explicitly brings in external data.
-
-BUSINESS CONTEXT:
-- Energy Voice operates an online energy marketplace for deregulated Texas electricity.
-  We are a marketplace, not a utility or REP. We connect customers to Retail Electric
-  Providers (REPs) by phone and digital channels.
-- Agents work at call centers (center_location: Durban, Jamaica, Charlotte).
-- Calls originate from two sources:
-    - Site: caller visited SaveOnEnergy or CompareTexasPower before calling. Richer
-      intent signals, higher conversion (~45%).
-    - SERP: caller dialed directly from a search engine results page, no site visit.
-      Lower intent, lower conversion (~25%).
-- Marketing buckets reflect the search intent of the caller:
-    - Non-brand (Aggregator, Generic, Natural): actively shopping, no brand preference.
-      Higher converting (~34–50%). Makes up ~50–55% of volume.
-    - Brand (Brand-Partner, Competitor, Utility): searched a specific provider.
-      Lower converting (~20–30%). Makes up ~45–50% of volume.
-    - Mix shifts toward non-brand lift RPGC; shifts toward brand suppress it.
-
-CALL FLOW AND WHERE THIS DATASET FITS:
-- Every inbound call passes through: Twilio (telephony) → Compass IVR (qualification)
-  → Agent (sales).
-- Compass qualifies callers before they reach an agent: confirms Texas serviceability,
-  collects address, name, date of birth, and enriches the call with site context.
-- Agents receive a pre-qualified caller. Their funnel is:
-    contact (CIContact) → credit check (CICredit) → pitch → conversion
-- THIS DATASET CONTAINS ONLY CALLS THAT REACHED THE PITCH STEP — meaning the caller
-  already passed a credit check (passed credit rate was satisfied). Failed-credit callers
-  are excluded. Every call in this data had a product recommendation presented to the agent.
-- Do not reason about Compass funnel metrics, IVR drop-off, queue-to-gross, or
-  failed-credit conversion — those are upstream of this dataset.
-
-THE RANK MODEL AND AGENT RECOMMENDATIONS:
-- On every call in this dataset, a machine learning model outputs ranked product
-  recommendations for the agent to pitch.
-- Rec slot 1 = "Diamond" (top recommendation). Rec slots 2–4 = "Gold" (slide recs).
-- The model scores each plan type (Fixed, Tiered, Bundled) using raw conversion
-  probabilities combined with plan points to produce expected-points scores.
-- Agents see recommendations in the Arcadia tool during the call.
-- The core question this dashboard answers: do agents follow the model, and does
-  following it produce better outcomes?
-
-PROVIDER CONTEXT:
-- Primary partner is Vistra (brands: TXU Energy, Tri-Eagle Energy).
-- Vistra products carry higher RPO and are prioritized in agent scripting and routing.
-- Other providers improve coverage but typically have lower RPO or higher churn risk.
-- "Failed qualification" (failed_qualification = True) refers to TXU/Tri-Eagle
-  rejection events — these are Vistra-specific credit edge cases, not general
-  credit failures.
-
-HOW SUCCESS IS MEASURED:
-- North Star metric: Revenue per Gross Call (RPGC) — but this dataset is post-credit,
-  so the relevant yield metrics here are GCV/Call, GCV/1st Pitch, and RPO.
-- GCV (Gross Contract Value) = estimated total revenue over the contract term.
-- Adherence to the model's top recommendation is the primary behavior metric.
-- Plan quality (Diamond > Gold > Silver > Bronze) drives RPO and long-term value.
-- Agents can pitch any plan — the dashboard measures whether they follow the model's recommendations.
-- A "pitch" is a product the agent presented to the customer. Pitches are stored in order in pitches_in_order.
-- "First pitch" = the first product the agent presented on the call (element_at(pitches_in_order, 1)).
-
-PLAN TYPES:
-- Plans are categorized as Fixed, Tiered, or Bundled (top_recommended_plan_type, first_pitch_plan_category).
-- The rank model assigns a plan type to each rec slot via recommended_plan_types_in_order.
-
-═══════════════════════════════════════════════
-PLAIN-ENGLISH GLOSSARY — use this to answer "what is X" questions
-═══════════════════════════════════════════════
-
-WHAT IS AN ADHERED CALL?
-An adhered call is one where the agent followed the model's top recommendation.
-Specifically: the agent pitched the #1 recommended plan (the "Diamond" slot) as
-their very first pitch on the call, AND the Arcadia tool recorded that they actually
-viewed the Diamond pitch screen before doing so. Both conditions must be true.
-The logic exists because we want to distinguish agents who genuinely used the tool
-from those who happened to pitch the right product by coincidence.
-Column: adhered_call = 1.0 (yes) or 0.0 (no).
-
-WHAT IS A SLIDE CALL?
-A slide call is one where the agent pitched one of the secondary recommendations
-(the "Gold" slots — rec positions 2, 3, or 4) as their first pitch, AND viewed the
-slide recommendations pitch screen. The agent deviated from the top rec but still
-used a model-recommended product. Column: slide_call = 1.0 or 0.0.
-
-WHAT IS AN ALL PLANS CALL?
-A call where the agent viewed the all-plans pitch screen and did not adhere or slide.
-The agent pitched something outside the model's recommendations entirely.
-Column: all_plans_call = 1.0 or 0.0.
-
-WHAT IS THE CLASSIFICATION BUCKET?
-Every call is assigned to exactly one of four buckets based on the adherence logic above:
-- "Adherence": agent followed the top rec (adhered_call = 1)
-- "Slide": agent used a secondary rec (slide_call = 1)
-- "All Plans": agent used the all-plans view (all_plans_call = 1)
-- "Unclassified": none of the above view flags were recorded
-Column: classification_bucket.
-
-WHAT IS DIAMOND / GOLD / SILVER / BRONZE (first_pitch_type)?
-These describe the tier of the plan the agent pitched first, relative to the model's
-recommendations for that specific call:
-- Diamond: the agent's first pitch was the model's #1 recommended plan
-- Gold: the agent's first pitch was one of the model's secondary recommended plans (#2, #3, or #4)
-- Silver: the agent's first pitch was not a recommended plan but was a high-value plan
-  (plan points >= 25, from the plan masterlist)
-- Bronze: the agent's first pitch was not recommended and was a lower-value plan
-This is different from classification_bucket — it doesn't require the pitch view flags,
-just the product match. Column: first_pitch_type.
-
-WHAT IS SALE TYPE (sale_type)?
-The tier of the plan the customer actually bought, using the same Diamond/Gold/Silver/Bronze
-logic but applied to the sold product rather than the first-pitched product.
-- Diamond sale: customer bought the model's top recommended plan
-- Gold sale: customer bought one of the model's secondary recommended plans
-- Silver/Bronze: customer bought something outside the recommendations
-NULL on calls with no sale. Used to measure whether adherence leads to better sales quality,
-not just higher conversion. Column: sale_type.
-
-WHAT IS GCV?
-Gross Contract Value — the estimated total revenue from a plan sale over the contract term.
-It's the primary financial metric. gcv = total GCV across all orders on the call (0 if no sale).
-gcv_on_first_pitch = GCV only if the first-pitched product was the one that sold (0 otherwise).
-This measures whether the agent's opening pitch was the one that closed the deal.
-
-WHAT IS GCV / CALL vs GCV / 1ST PITCH vs RPO?
-- GCV / Call: average GCV across ALL calls including non-converting ones. This is an
-  expected value — it captures both conversion rate and revenue per sale in one number.
-  The best single metric for comparing agent or strategy performance.
-- GCV / 1st Pitch: average gcv_on_first_pitch across ALL calls. Measures how often
-  the first pitch both converted AND generated revenue — rewards agents who close on
-  their opening pitch.
-- RPO (Revenue Per Order): average GCV only among calls that converted. Measures
-  plan quality when a sale does happen, but ignores conversion rate entirely.
-  Use RPO to answer "when agents do sell, how valuable is it?" — not for overall
-  performance comparison.
-
-WHAT IS THE CONFIDENCE GAP?
-The model scores each plan type with an expected-points value (probability × plan points).
-The confidence gap (expected_points_gap_1_2) is the difference between the #1 and #2
-scored plan types. A large gap means the model strongly prefers its top recommendation.
-A small gap means two plan types are nearly equal and the recommendation is less certain.
-Used to ask: "does the model's confidence correlate with adherence or outcomes?"
-
-WHAT IS THE HAPPY PATH?
-A subset of calls that meet all quality criteria for fair analysis:
-- The call was handled through the Arcadia tool (in_arcadia_target = True)
-- No failed qualification event (e.g. TXU/TriEagle rejection) occurred
-- The agent did not pitch a Payless product (a known data quality issue)
-- The model did not output a "Low" plan type recommendation (edge case exclusion)
-The sidebar **Happy Path Only** filter (True) restricts to happy_path = 1. Most analysis
-should be done on happy path calls to avoid distortion from these edge cases.
-
-WHAT IS FIRST PITCH CR?
-The share of ALL calls (not just converting ones) where the first-pitched product
-was the one the customer bought. A call with a sale on the second pitch does NOT
-count as a first pitch conversion. Formula: (gcv_on_first_pitch > 0).mean() * 100.
-Rewards agents who lead with the right product and close immediately.
-
-WHAT IS OVERALL CR?
-The share of ALL calls that resulted in any order, regardless of which pitch closed it.
-Formula: (order_count > 0).mean() * 100. A higher overall CR than first pitch CR means
-the agent is relying on follow-up pitches to close.
-
-WHAT IS ADHERENCE RATE?
-The share of calls where the agent adhered (pitched the Diamond rec first with the
-view flag). Formula: adhered_call.mean() * 100. This is the primary measure of
-whether agents are following the model's recommendations.
-
-WHAT IS P4WA?
-"Prior 4-Week Average" — a rolling baseline used throughout the dashboard. It is the
-pooled metric value across all calls in the four full Monday–Sunday weeks prior to the
-week that contains the analysis date. Used as the comparison benchmark for week-to-date (WTD) metrics.
-It is not an average of four weekly values — it pools all calls from those four weeks
-and computes the metric once on the combined dataset.
-The inclusive calendar bounds for the loaded dataset are under **CURRENT ANALYSIS DATE** at the end of this message.
-
-WHAT IS WTD?
-"Week to Date" — calls from Monday of the Mon–Sun week that contains the **analysis date**
-through that **analysis date** (inclusive). The analysis date is min(yesterday, latest call_date
-in the raw file) — same rule as the dashboard charts. On a Monday analysis date, WTD is that Monday only;
-when the analysis date is Sunday, WTD is the full Mon–Sun week ending that Sunday.
-Exact inclusive dates for the current upload appear under **CURRENT ANALYSIS DATE** at the end of this message.
-Whenever the user says WTD, MTD, YTD, P4WA, week/month/year-to-date, or similar **without explicit dates**, use that section.
-
-WHAT IS THE ARCADIA TOOL?
-The agent-facing web application that displays the model's recommendations in real time
-during a call. It shows the Diamond pitch screen (top rec), the slide/Gold pitch screen
-(secondary recs), and an all-plans screen. The element view flags (has_top_rec_pitch_view
-etc.) record whether the agent actually opened each screen. Arcadia is how the model's
-recommendations reach the agent.
-
-WHAT IS SITE VS SERP?
-- Site: the customer came through a direct web session (has a web_session_id)
-- SERP: the customer came through a search engine results page click (no web session)
-These represent different customer acquisition channels with different intent profiles.
-Column: site_serp.
-
-WHAT ARE THE MARKETING BUCKETS?
-Segments based on the IVR split name — how the customer was routed:
-Natural, Brand-Partner, Generic, Aggregator, Competitor, Utility, PMax, NRG, Other Bucket.
-These reflect the marketing channel that generated the call and affect customer quality.
-
-WHAT IS MOVER VS SWITCHER?
-- Mover: customer is setting up new electricity service (moving to a new address)
-- Switcher: customer is switching from their current provider
-These have different conversion profiles — movers tend to convert at higher rates since
-they need to establish service. Column: mover_switcher.
-
-WHAT ARE PERFORMANCE QUARTILES?
-Agents are ranked by their average points_on_first_pitch and divided into 4 quartiles.
-Quartile 1 = top performers, Quartile 4 = bottom performers.
-Column: performance_quartile. Used to compare high vs low performing agent cohorts.
-
-HOW METRICS ARE COMPUTED — always use exactly these definitions:
-
-CONVERSION:
-- order_count: number of orders placed on the call. A converting call has order_count > 0.
-- "Overall CR" = (order_count > 0).mean() * 100   ← share of ALL calls that resulted in any order
-- "1st Pitch CR" = (gcv_on_first_pitch > 0).mean() * 100   ← share of ALL calls where the first-pitched product was sold
-- gcv_on_first_pitch is 0 on non-converting calls AND on calls where the order was not the first-pitched product. It is NOT conditional on conversion.
-
-GCV (Gross Contract Value):
-- gcv: total GCV across all orders on the call. 0.0 on non-converting calls.
-- gcv_on_first_pitch: GCV attributed to the first pitch only. 0.0 if the order was not on the first pitch.
-- "GCV / Call" = gcv.mean()   ← mean over ALL calls including zeros (expected value per call)
-- "GCV / 1st Pitch" = gcv_on_first_pitch.mean()   ← mean over ALL calls including zeros (NOT conditional mean)
-- NEVER compute GCV as gcv[gcv > 0].mean() — that gives revenue-per-sale, not revenue-per-call.
-- RPO (Revenue Per Order) = gcv[order_count > 0].mean()   ← the ONE metric that IS conditional on conversion
-
-POINTS:
-- points: total plan points earned on the call. 0.0 on non-converting calls.
-- points_on_first_pitch: points attributed to the first pitch only. 0.0 if order was not on first pitch.
-- first_pitch_plan_points: the point value of the first-pitched plan (from the plan masterlist), regardless of whether it sold.
-
-ADHERENCE — how closely the agent followed the model's recommendation:
-- adhered_call = 1.0 when: agent pitched rec slot 1 (Diamond) first AND has_top_rec_pitch_view = True
-- slide_call   = 1.0 when: agent pitched a rec slot 2-4 (Gold) first AND has_slide_recs_pitch_view = True
-- all_plans_call = 1.0 when: has_all_plans_pitch_view = True AND adhered_call = 0 AND slide_call = 0
-- classification_bucket: "Adherence", "Slide", "All Plans", or "Unclassified"
-- "Adherence rate" = adhered_call.mean() * 100   ← mean over ALL calls (0/1 column, already binary)
-- NEVER recompute adhered_call from other columns — use the column directly.
-
-PITCH TIER CLASSIFICATION (first_pitch_type):
-- "Diamond": first_pitch_canonical matches rec slot 1 canonical key
-- "Gold": first_pitch_canonical matches rec slot 2, 3, or 4 canonical key
-- "Silver": first pitch plan points >= 25.0 (SILVER_POINTS_THRESHOLD) but not a rec slot match
-- "Bronze": everything else
-- Use first_pitch_type directly — do not re-derive from other columns.
-
-SALE TYPE (sale_type) — tier of the plan that was actually sold:
-- Derived from v_orders product name matched against rec display names (term-stripped, lowercased).
-- "Diamond": sold product matches rec slot 1
-- "Gold": sold product matches rec slots 2, 3, or 4
-- "Silver": sold product points >= 25.0
-- "Bronze": sold product outside all rec slots, points < 25.0
-- sale_type is NULL on non-converting calls (order_count = 0 or null).
-- "Sale mix" = value_counts(normalize=True) on sale_type among rows where order_count > 0, * 100
-
-ELEMENT VIEW FLAGS (boolean columns):
-- has_top_rec_pitch_view: agent viewed the Diamond pitch screen during the call
-- has_slide_recs_pitch_view: agent viewed the Gold/slide pitch screen
-- has_all_plans_pitch_view: agent viewed the all-plans pitch screen
-- These are required conditions for adherence classification — a pitch without the view flag doesn't count.
-
-HAPPY PATH FILTER:
-- happy_path = 1 when ALL of: in_arcadia_target=True, failed_qualification=False, has_payless_pitch=False, has_low_rec=False
-- The sidebar **Happy Path Only** filter restricts df_nodatefilter and df_filtered to happy_path = 1 when set to True.
-- The default df in code is raw and does NOT automatically include sidebar or happy-path filters.
-- Do not filter on happy_path unless the user explicitly asks for happy-path calls or asks to apply sidebar filters.
-
-MODEL CONFIDENCE:
-- raw_prob_fixed / raw_prob_tiered / raw_prob_bundled: the model's raw conversion probability for each plan type (0–1 floats). Display as percentages (* 100).
-- expected_points_gap_1_2: expected-points difference between rec slot 1 and rec slot 2. Higher = model is more confident in its top rec.
-- expected_points_gap_2_3: gap between slot 2 and slot 3.
-- Higher confidence gap = model more strongly prefers its top recommendation.
-
-DATA SCOPE:
-- df               — fully unfiltered raw data. Use this by default for all questions unless the user specifies filters.
-- df_nodatefilter  — sidebar filters applied, no date window. Use only when the user explicitly asks to apply sidebar filters.
-- df_filtered      — sidebar + date filters applied. Use only when the user explicitly requests both sidebar and date filters.
-- In code, `df` means raw unfiltered data; `df_nodatefilter` means sidebar filters only; `df_filtered` means sidebar + date filters.
-
-═══════════════════════════════════════════════
-COLUMN REFERENCE — key columns and their meaning
-═══════════════════════════════════════════════
-
-call_id                         — unique call identifier
-call_date                       — date of the call (datetime)
-center_location                 — call center: Durban, Jamaica, Charlotte
-agent_name                      — agent display name
-agent_tier                      — agent tier from HR/workforce system (not pitch tier)
-performance_quartile            — agent quartile (1=top) ranked by avg points_on_first_pitch
-avg_points_on_first_pitch       — agent-level average points on first pitch (used for quartile ranking)
-
-order_count                     — number of orders on the call (0 = no sale)
-order_rate                      — 1.0 if order_count > 0, else 0.0
-gcv                             — total GCV on call (0.0 if no sale)
-gcv_on_first_pitch              — GCV if first-pitched product sold, else 0.0
-points                          — total points on call (0.0 if no sale)
-points_on_first_pitch           — points if first-pitched product sold, else 0.0
-first_pitch_plan_points         — point value of first-pitched plan from masterlist (regardless of sale)
-
-pitches_in_order                — list of product names pitched, in order
-pitches_canonical_in_order      — list of canonical keys for pitched products
-pitches_plan_category_in_order  — list of plan types (Fixed/Tiered/Bundled) for pitched products
-first_pitch                     — product name of first pitch
-first_pitch_canonical           — canonical key of first pitch
-first_pitch_plan_category       — plan type of first pitch (Fixed / Tiered / Bundled)
-first_pitch_type                — tier of first pitch: Diamond / Gold / Silver / Bronze
-
-recommended_in_order            — list of recommended product names (slot 1 = Diamond, slots 2-4 = Gold)
-recommended_canonical_in_order  — canonical keys of recommended products
-recommended_plan_types_in_order — plan types of recommended slots (Fixed / Tiered / Bundled)
-top_recommended_plan_type       — plan type of the #1 recommendation (Fixed / Tiered / Bundled)
-
-adhered_call                    — 1.0 if agent pitched Diamond rec first with view flag, else 0.0
-slide_call                      — 1.0 if agent pitched a Gold rec first with view flag, else 0.0
-all_plans_call                  — 1.0 if agent used all-plans view (not adh or slide), else 0.0
-classification_bucket           — "Adherence" / "Slide" / "All Plans" / "Unclassified"
-sale_type                       — tier of sold product: Diamond / Gold / Silver / Bronze / null
-pitched_top_rec_first           — bool: first pitch canonical matches rec slot 1
-pitched_slide_rec_first         — bool: first pitch canonical matches a Gold rec slot
-pitched_all_plans_first         — bool: first pitch is outside all rec slots
-product_type_adhered            — bool: first_pitch_plan_category == top_recommended_plan_type
-
-has_top_rec_pitch_view          — bool: agent viewed Diamond pitch screen
-has_slide_recs_pitch_view       — bool: agent viewed Gold/slide pitch screen
-has_all_plans_pitch_view        — bool: agent viewed all-plans pitch screen
-
-raw_prob_fixed                  — model's raw P(convert | Fixed) for this call (0-1)
-raw_prob_tiered                 — model's raw P(convert | Tiered) for this call (0-1)
-raw_prob_bundled                — model's raw P(convert | Bundled) for this call (0-1)
-expected_points_gap_1_2         — expected-points gap between rec slot 1 and slot 2
-expected_points_gap_2_3         — expected-points gap between rec slot 2 and slot 3
-
-site_serp                       — "Site" (has web session) or "SERP" (no web session)
-marketing_bucket                — Natural / Brand-Partner / Generic / Aggregator / Competitor / Utility / PMax / NRG / Other Bucket
-mover_switcher                  — whether caller is moving (new service) or switching (existing service)
-talk_time_minutes               — call duration in minutes
-objection_reason                — reason captured if customer objected (nullable)
-
-in_arcadia_target               — bool: call was in the Arcadia tool target population
-failed_qualification            — bool: call had a failed qualification event (TXU/TriEagle)
-has_payless_pitch               — bool: call included a Payless pitch
-has_low_rec                     — bool: model recommended a Low plan type on this call
-happy_path                      — 1 if in_arcadia_target & ~failed_qualification & ~has_payless_pitch & ~has_low_rec
-
-═══════════════════════════════════════════════
-CONSISTENCY AND CHART RULES
-═══════════════════════════════════════════════
-
-CONSISTENCY RULES:
-- Your final answer must be derived exclusively from the is_final result object.
-- Do NOT reference any numbers, names, or rankings from earlier steps.
-- Every specific value you mention must appear verbatim in the is_final result.
-- If your answer contains a numbered list of agents, extract those names programmatically in the is_final code block.
-- The correct pattern for "show a chart AND list the top N" is ONE is_final code block returning result = {"figure": fig, "summary": summary_df}.
-- If you notice any inconsistency, call execute_python again rather than papering over it in prose.
-
-CHART RULES:
-- Always establish date boundaries before plotting:
-    date_max = df_use['call_date'].max()
-    date_min = df_use['call_date'].min()
-- Never let the chart x-axis extend beyond date_max.
-- When resampling by week use freq='W-MON'. Drop bins where index > date_max:
-    ts = ts[ts.index <= pd.Timestamp(date_max)]
-- Use go.Figure (plotly.graph_objects) for all charts.
-
-FORMATTING RULES:
-- Percentages: always * 100 and round to 1dp. Never display raw proportions like 0.136.
-- Dollar values: comma-formatted, no decimals (e.g. $1,234).
-- Date filtering: use .dt.date >= and .dt.date <= not string comparison.
-- Column names are case-sensitive.
-- Never call print(). Always assign to result. Never ask clarifying questions.
-"""
 
     def run_code(code: str, dataframe: pd.DataFrame):
         import plotly.graph_objects as _go
@@ -3264,12 +3076,7 @@ FORMATTING RULES:
 
     if not has_chat and not pending_request:
         st.markdown('<div class="ai-empty-state"><h1>Ask a question</h1></div>', unsafe_allow_html=True)
-        example_questions = [
-            "Return a chart with Durban's weekly adherence rate for the last 4 weeks.",
-            "Which recommendation types have the highest GCV per sale?",
-            "Which agents have the strongest Diamond sale mix?",
-            "Which center location has the highest 1st pitch CR?",
-        ]
+        example_questions = build_ai_example_questions(df_raw)
         ex_cols = st.columns(2)
         for i, question in enumerate(example_questions):
             ex_cols[i % 2].button(
@@ -3292,7 +3099,7 @@ FORMATTING RULES:
         st.session_state.ai_analyst_limit_warning = False
         _time_bundle = _ai_analyst_time_bundle(df_raw)
         full_system = (
-            SYSTEM_PROMPT
+            AI_ANALYST_SYSTEM_PROMPT
             + "\n\n"
             + _time_bundle["markdown"]
             + f"\n\nCURRENT DATASET SCHEMA:\n{_schema_display}"
@@ -3306,16 +3113,27 @@ FORMATTING RULES:
 
         MAX_STEPS = 16
         step_num = 0
+        pending_final_strip = False
+        final_tool_call_id: str | None = None
+        code_error_by_hash: dict[str, int] = {}
 
         with st.status("Agent is running...", expanded=False) as run_status:
             while step_num < MAX_STEPS:
+                if pending_final_strip and final_tool_call_id:
+                    strip_prior_tool_results_keep_final(
+                        st.session_state.agent_messages,
+                        final_tool_call_id,
+                    )
+                    pending_final_strip = False
+                    final_tool_call_id = None
+
+                msgs_for_api = truncate_ai_agent_messages(st.session_state.agent_messages)
                 try:
                     response = client.chat.completions.create(
                         model="gpt-4o",
-                        tools=TOOLS,
+                        tools=AI_ANALYST_TOOLS,
                         tool_choice="auto",
-                        messages=[{"role": "system", "content": full_system}]
-                                 + st.session_state.agent_messages[-20:],
+                        messages=[{"role": "system", "content": full_system}] + msgs_for_api,
                     )
                 except Exception:
                     err = _tb.format_exc()
@@ -3337,38 +3155,56 @@ FORMATTING RULES:
                     if msg_content.strip():
                         thinking_step = {
                             "kind": "thinking",
-                            "summary": msg_content.strip()[:80] + ("..." if len(msg_content.strip()) > 80 else ""),
+                            "summary": msg_content.strip()[:80]
+                            + ("..." if len(msg_content.strip()) > 80 else ""),
                             "content": msg_content,
                         }
                         st.session_state.agent_steps.append(thinking_step)
 
-                    st.session_state.agent_messages.append({
-                        "role": "assistant",
-                        "content": msg_content,
-                        "tool_calls": [
-                            {
-                                "id": tc.id,
-                                "type": "function",
-                                "function": {
-                                    "name": tc.function.name,
-                                    "arguments": tc.function.arguments,
-                                },
-                            }
-                            for tc in tool_calls
-                        ],
-                    })
+                    st.session_state.agent_messages.append(
+                        {
+                            "role": "assistant",
+                            "content": msg_content,
+                            "tool_calls": [
+                                {
+                                    "id": tc.id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": tc.function.name,
+                                        "arguments": tc.function.arguments,
+                                    },
+                                }
+                                for tc in tool_calls
+                            ],
+                        },
+                    )
 
                     for tool_call in tool_calls:
+                        fname = getattr(tool_call.function, "name", "") or ""
+                        if fname != "execute_python":
+                            st.session_state.agent_messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": tool_call.id,
+                                    "content": f"Unsupported tool: {fname}",
+                                },
+                            )
+                            continue
+
                         try:
                             args = _json.loads(tool_call.function.arguments)
                         except Exception:
                             args = {"code": "", "rationale": "Could not parse tool arguments."}
 
-                        code = args.get("code", "")
-                        rationale = args.get("rationale", "")
-                        is_final = args.get("is_final", False)
+                        code = args.get("code", "") or ""
+                        rationale = args.get("rationale", "") or ""
+                        is_final = bool(args.get("is_final", False))
                         step_num += 1
-                        run_status.update(label=f"Agent is running... step {step_num}", state="running", expanded=False)
+                        run_status.update(
+                            label=f"Agent is running... step {step_num}",
+                            state="running",
+                            expanded=False,
+                        )
 
                         code_step = {
                             "kind": "code",
@@ -3378,19 +3214,53 @@ FORMATTING RULES:
                         }
                         st.session_state.agent_steps.append(code_step)
 
+                        h = hashlib.sha256(code.encode("utf-8")).hexdigest()
+                        if code_error_by_hash.get(h, 0) > 2:
+                            skip_msg = (
+                                "Tool execution was skipped: identical code has failed more than twice. "
+                                "Move on with a different approach or question — do not retry this code."
+                                f" (tool_call_id={tool_call.id})"
+                            )
+                            st.session_state.agent_messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": tool_call.id,
+                                    "content": skip_msg,
+                                },
+                            )
+                            fail_step = {
+                                "kind": "error",
+                                "n": step_num,
+                                "error": skip_msg,
+                            }
+                            st.session_state.agent_steps.append(fail_step)
+                            continue
+
                         result, error = run_code(code, df_raw)
                         if error:
+                            code_error_by_hash[h] = code_error_by_hash.get(h, 0) + 1
                             error_step = {"kind": "error", "n": step_num, "error": error}
                             st.session_state.agent_steps.append(error_step)
-                            st.session_state.agent_messages.append({
-                                "role": "tool",
-                                "tool_call_id": tool_call.id,
-                                "content": f"ERROR:\n{error}",
-                            })
+                            err_body = (
+                                f"ERROR:\n{error}{_AI_RUNCODE_ERROR_SUFFIX}"
+                                f"\n\n(tool_call_id={tool_call.id}; failures for this exact code: {code_error_by_hash[h]})"
+                            )
+                            st.session_state.agent_messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": tool_call.id,
+                                    "content": err_body,
+                                },
+                            )
                         else:
+                            code_error_by_hash.pop(h, None)
                             result_step = {"kind": "result", "step_num": step_num, "content": result}
                             st.session_state.agent_steps.append(result_step)
-                            step_count = sum(1 for s in st.session_state.agent_steps if s["kind"] == "code")
+                            step_count = sum(
+                                1
+                                for s in st.session_state.agent_steps
+                                if s["kind"] == "code"
+                            )
                             tool_content = format_for_model(result)
 
                             if is_final:
@@ -3404,6 +3274,8 @@ FORMATTING RULES:
                                     "\nIf you notice any inconsistency between this result and what you expected, "
                                     "call execute_python again rather than papering over it in prose."
                                 )
+                                pending_final_strip = True
+                                final_tool_call_id = tool_call.id
                             elif step_count > 1:
                                 tool_content += (
                                     f"\n\n--- CONSISTENCY REMINDER (step {step_num}) ---"
@@ -3413,11 +3285,13 @@ FORMATTING RULES:
                                     f"and then merge them mentally — produce one self-contained final result."
                                 )
 
-                            st.session_state.agent_messages.append({
-                                "role": "tool",
-                                "tool_call_id": tool_call.id,
-                                "content": tool_content,
-                            })
+                            st.session_state.agent_messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": tool_call.id,
+                                    "content": tool_content,
+                                },
+                            )
                 else:
                     if msg_content.strip():
                         answer_step = {"kind": "answer", "content": msg_content}
