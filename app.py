@@ -138,20 +138,7 @@ with st.sidebar:
     agent_opts = sorted(df_raw["agent_name"].dropna().unique().tolist()) if "agent_name" in df_raw.columns else []
 
     center_defaults = [c for c in ["Durban", "Jamaica"] if c in centers_opts]
-    sel_center   = st.multiselect("Center",           options=centers_opts,  default=center_defaults, key="filter_center")
-    sel_brand_nonbrand = st.multiselect(
-        "Brand/Non-Brand",
-        options=["Brand", "Non-Brand"],
-        default=[],
-        key="filter_brand_nonbrand",
-        help="Shortcut: Brand = Brand-Partner, Competitor, and NRG; Non-Brand = all other buckets. "
-        "Leave empty for no filter. Refines together with Marketing Bucket when that is also set. "
-        "Selecting both is equivalent to no filter.",
-    )
-    sel_mkt      = st.multiselect("Marketing Bucket", options=mkt_opts,      default=[], key="filter_mkt")
-    sel_serp     = st.multiselect("Site / SERP",      options=serp_opts,     default=[], key="filter_serp")
-    sel_mov      = st.multiselect("Mover / Switcher", options=mov_opts,      default=[], key="filter_mov")
-    sel_quartile = st.multiselect("Agent Quartile",   options=quartile_opts, default=[], key="filter_quartile")
+    sel_center   = st.multiselect("Center", options=centers_opts, default=center_defaults, key="filter_center")
 
     # Agent filter with search — st.multiselect has built-in search when there are many options
     sel_agent    = st.multiselect(
@@ -163,8 +150,6 @@ with st.sidebar:
     )
 
     rec_type_opts = sorted(df_raw["top_recommended_plan_type"].dropna().unique().tolist()) if "top_recommended_plan_type" in df_raw.columns else []
-    sel_rec_type  = st.multiselect("Rec Product Type", options=rec_type_opts, default=[], key="filter_rec_type")
-
     happy_path_tf = st.selectbox(
         "Happy Path Only",
         options=["True", "False"],
@@ -173,6 +158,22 @@ with st.sidebar:
         help="True: happy_path = 1 (Arcadia target, no failed qualification, no Payless pitch, no Low rec). False: all calls.",
     )
     happy_only = happy_path_tf == "True"
+
+    with st.expander("Advanced filters", expanded=False):
+        sel_brand_nonbrand = st.multiselect(
+            "Brand/Non-Brand",
+            options=["Brand", "Non-Brand"],
+            default=[],
+            key="filter_brand_nonbrand",
+            help="Shortcut: Brand = Brand-Partner, Competitor, and NRG; Non-Brand = all other buckets. "
+            "Leave empty for no filter. Refines together with Marketing Bucket when that is also set. "
+            "Selecting both is equivalent to no filter.",
+        )
+        sel_mkt      = st.multiselect("Marketing Bucket", options=mkt_opts,      default=[], key="filter_mkt")
+        sel_serp     = st.multiselect("Site / SERP",      options=serp_opts,     default=[], key="filter_serp")
+        sel_mov      = st.multiselect("Mover / Switcher", options=mov_opts,      default=[], key="filter_mov")
+        sel_quartile = st.multiselect("Agent Quartile",   options=quartile_opts, default=[], key="filter_quartile")
+        sel_rec_type = st.multiselect("Rec Product Type", options=rec_type_opts, default=[], key="filter_rec_type")
 
     st.divider()
 
@@ -405,7 +406,7 @@ def build_schema_context(d: pd.DataFrame) -> str:
 
     lines.append("\n═══ KEY COLUMN VALUES (raw df) ═══")
     key_cats = [
-        "center_location", "top_recommended_plan_type", "classification_bucket",
+        "center_location", "top_recommended_plan_type",
         "first_pitch_type", "sale_type", "mover_switcher", "marketing_bucket",
     ]
     for col in key_cats:
@@ -517,27 +518,21 @@ def table_export_row(
     *,
     key_suffix: str = "",
 ) -> None:
-    """Renders download + copy actions (place below ``st.dataframe``). Copy button sized to match Streamlit download."""
+    """Renders a compact copy action below a table."""
     tsv = display_df.to_csv(index=False, sep="\t")
-    csv_bytes = display_df.to_csv(index=False).encode("utf-8")
     uid = hashlib.md5((download_filename + "\0" + key_suffix).encode(), usedforsecurity=False).hexdigest()[:12]
-    b1, b2 = st.columns([1, 1])
-    with b1:
-        st.download_button(
-            "Download CSV",
-            data=csv_bytes,
-            file_name=download_filename,
-            mime="text/csv",
-            key=f"dl_{uid}",
-        )
-    with b2:
+    copy_bg = "#f8fafc" if theme.is_light_theme() else "#181c25"
+    copy_text = "#475569" if theme.is_light_theme() else "#8b95aa"
+    copy_border = "#cbd5e1" if theme.is_light_theme() else "#2e3649"
+    copy_col, _spacer = st.columns([0.65, 6.35])
+    with copy_col:
         tsv_literal = _json.dumps(tsv)
         lbl_literal = _json.dumps(copy_label)
         components.html(
             f"""<div style="font-family:DM Sans,sans-serif;padding:0;margin:0;">
 <button type="button" id="cpbtn_{uid}"
-  style="background:#3d8ef8;color:#fff;border:none;border-radius:0.5rem;box-sizing:border-box;
-  width:100%;min-height:2.625rem;height:2.625rem;padding:0 1.25rem;font-size:0.875rem;font-weight:600;
+  style="background:{copy_bg};color:{copy_text};border:1px solid {copy_border};border-radius:999px;box-sizing:border-box;
+  width:100%;min-height:2.25rem;height:2.25rem;padding:0 0.85rem;font-size:0.78rem;font-weight:500;
   line-height:1.2;cursor:pointer;display:flex;align-items:center;justify-content:center;">{copy_label}</button>
 </div>
 <script>
@@ -576,29 +571,93 @@ def table_export_row(
         )
 
 
+def render_table_expander(
+    label: str,
+    display_df: pd.DataFrame,
+    export_filename: str,
+    *,
+    key_suffix: str,
+    height_rows: int | None = None,
+) -> None:
+    """Keep supporting data available without making it compete with the chart."""
+    with st.expander(label, expanded=False):
+        st.dataframe(
+            display_df,
+            use_container_width=True,
+            hide_index=True,
+            height=dataframe_display_height(height_rows if height_rows is not None else len(display_df)),
+        )
+        table_export_row(display_df, export_filename, key_suffix=key_suffix)
+
+
 def mix_share_pct(slice_df: pd.DataFrame, plan_type: str) -> float:
     if slice_df.empty or "top_recommended_plan_type" not in slice_df.columns:
         return float("nan")
     return (slice_df["top_recommended_plan_type"] == plan_type).mean() * 100
 
 
+PERFORMANCE_METRICS = ["1st Pitch CR", "Overall CR", "GCV / 1st Pitch", "GCV / Call", "RPO"]
+
+
+def calc_performance_metric(source: pd.DataFrame, metric: str) -> float:
+    if source.empty:
+        return float("nan")
+    if metric == "Calls":
+        return float(len(source))
+    if metric == "1st Pitch CR":
+        if "gcv_on_first_pitch" not in source.columns:
+            return float("nan")
+        return (source["gcv_on_first_pitch"] > 0).mean() * 100
+    if metric == "Overall CR":
+        if "order_count" not in source.columns:
+            return float("nan")
+        return (source["order_count"].fillna(0) > 0).mean() * 100
+    if metric == "GCV / 1st Pitch":
+        if "gcv_on_first_pitch" not in source.columns:
+            return float("nan")
+        return source["gcv_on_first_pitch"].mean()
+    if metric == "GCV / Call":
+        if "gcv" not in source.columns:
+            return float("nan")
+        return source["gcv"].mean()
+    if metric == "RPO":
+        if "order_count" not in source.columns or "gcv" not in source.columns:
+            return float("nan")
+        orders = source[source["order_count"].fillna(0) > 0]
+        return orders["gcv"].mean() if len(orders) else float("nan")
+    return float("nan")
+
+
+def metric_axis_kwargs(metric: str) -> dict:
+    if metric.endswith("%") or metric in ("1st Pitch CR", "Overall CR", "Share of Calls", "Share of Sales", "Tier Mix"):
+        return {"yaxis_ticksuffix": "%"}
+    if metric in ("GCV / 1st Pitch", "GCV / Call", "RPO", "GCV / Sale"):
+        return {"yaxis_tickprefix": "$"}
+    return {}
+
+
+def format_chart_value(value, metric: str) -> str:
+    try:
+        if value is None or pd.isna(value):
+            return "—"
+    except TypeError:
+        return "—"
+    if metric.endswith("%") or metric in ("1st Pitch CR", "Overall CR", "Share of Calls", "Share of Sales", "Tier Mix"):
+        return f"{float(value):.1f}%"
+    if metric in ("GCV / 1st Pitch", "GCV / Call", "RPO", "GCV / Sale"):
+        return f"${float(value):,.0f}"
+    return f"{float(value):,.0f}"
+
+
 def prepare_agent_behavior_dataframe(d: pd.DataFrame, adherence_mode: str):
-    """Build agent-tab frame with ``agent_tier_display`` and column spec for adherence / bucket.
+    """Build agent-tab frame with ``agent_tier_display`` from first-pitch or sale tier.
 
     Returns ``(frame, spec, effective_mode)``. If ``Sale`` is requested but required columns
     are missing, falls back to first-pitch columns and ``effective_mode == "First Pitch"``.
     """
     out = d.copy()
-    base_spec = {
-        "adh": "adhered_call",
-        "slide": "slide_call",
-        "ap": "all_plans_call",
-        "cls": "classification_bucket",
-    }
-    sale_needed = {
-        "sale_type", "order_count", "has_top_rec_pitch_view",
-        "has_slide_recs_pitch_view", "has_all_plans_pitch_view",
-    }
+    base_spec = {}
+    sale_needed = {"sale_type", "order_count"}
     if adherence_mode != "Sale" or not sale_needed.issubset(out.columns):
         if "first_pitch_type" in out.columns:
             out["agent_tier_display"] = out["first_pitch_type"]
@@ -609,22 +668,6 @@ def prepare_agent_behavior_dataframe(d: pd.DataFrame, adherence_mode: str):
 
     ord_pos = out["order_count"].fillna(0) > 0
     stype = out["sale_type"]
-    has_top = out["has_top_rec_pitch_view"].fillna(False).astype(bool)
-    has_slide = out["has_slide_recs_pitch_view"].fillna(False).astype(bool)
-    has_all = out["has_all_plans_pitch_view"].fillna(False).astype(bool)
-
-    sale_adhered = (ord_pos & (stype == "Diamond") & has_top).astype("float64")
-    sale_slide = (ord_pos & (stype == "Gold") & has_slide).astype("float64")
-    sale_all = (has_all & (sale_adhered < 1) & (sale_slide < 1)).astype("float64")
-
-    out["sale_adhered_call"] = sale_adhered
-    out["sale_slide_call"] = sale_slide
-    out["sale_all_plans_call"] = sale_all
-
-    out["sale_classification_bucket"] = "Unclassified"
-    out.loc[sale_adhered >= 1, "sale_classification_bucket"] = "Adherence"
-    out.loc[(sale_slide >= 1) & (sale_adhered < 1), "sale_classification_bucket"] = "Slide"
-    out.loc[(sale_all >= 1) & (sale_adhered < 1) & (sale_slide < 1), "sale_classification_bucket"] = "All Plans"
 
     # Tier mix / tier filters: only defined on converting calls with a canonical tier
     # (non-sales, missing sale_type, or non-D/G/S/B values stay NA — excluded from mix charts).
@@ -632,13 +675,7 @@ def prepare_agent_behavior_dataframe(d: pd.DataFrame, adherence_mode: str):
     tier_known = ord_pos & stype.notna() & stype.isin(SALE_TIER_ORDER)
     out.loc[tier_known, "agent_tier_display"] = stype.loc[tier_known].astype(str)
 
-    sale_spec = {
-        "adh": "sale_adhered_call",
-        "slide": "sale_slide_call",
-        "ap": "sale_all_plans_call",
-        "cls": "sale_classification_bucket",
-    }
-    return out, sale_spec, "Sale"
+    return out, base_spec, "Sale"
 
 
 # Plotly: side-by-side charts share height + margins so x-axes line up at the same baseline.
@@ -664,23 +701,46 @@ tab_model, tab_agent, tab_sale_mix, tab_agent_level, tab_chat = st.tabs(["Model 
 with tab_model:
 
     # ── Section 1: Recommendation Mix ────────────────────────────────────────
-    st.subheader("Recommendation Mix Over Time")
+    st.subheader(
+        "Recommendation Mix",
+        help=(
+            "Trend model recommendation mix by plan type or product slot. KPI cards compare WTD plan-type "
+            "mix against pooled P4WA and ignore the sidebar date filter."
+        ),
+    )
 
-    if "top_recommended_plan_type" in df_nodatefilter.columns and "call_date" in df_nodatefilter.columns:
+    prod_col_candidates = ["recommended_in_order", "recommended_matched_in_order"]
+    prod_col = next((c for c in prod_col_candidates if c in df.columns), None)
+    rec_view_options = ["Plan type"] + (["Product"] if prod_col is not None else [])
+
+    rm_c1, rm_c2, rm_c3 = st.columns([1.1, 1.1, 1])
+    with rm_c1:
+        rec_mix_view = st.selectbox(
+            "View",
+            rec_view_options,
+            key="rec_mix_view",
+            help="Plan type uses the #1 model recommendation. Product uses a ranked recommendation slot.",
+        )
+    with rm_c2:
+        rec_mix_metric = st.selectbox(
+            "Metric",
+            ["Share of Calls", "Call Count"],
+            key="rec_mix_metric",
+            help="Share uses all calls in the period as the denominator.",
+        )
+    with rm_c3:
+        rec_mix_top_n = st.slider(
+            "Top categories",
+            min_value=3,
+            max_value=20,
+            value=10,
+            key="rec_mix_top_n",
+            help="Limits the chart when many categories are available.",
+        )
+
+    if rec_mix_view == "Plan type" and "top_recommended_plan_type" in df_nodatefilter.columns and "call_date" in df_nodatefilter.columns:
         plan_types_all = sorted(df_nodatefilter["top_recommended_plan_type"].dropna().unique().tolist())
         if plan_types_all:
-            _wdf_mix = df_nodatefilter.dropna(subset=["call_date", "top_recommended_plan_type"])
-            if not _wdf_mix.empty:
-                _asof_mix = min(report_through_date(), pd.to_datetime(_wdf_mix["call_date"].max()).date())
-                _ws_mix = monday_of_week_containing(_asof_mix)
-                st.caption(
-                    "Mon–Sun weeks · **WTD** = share of calls from **Monday of this week through yesterday** "
-                    "(same logic as Arcadia Overview: on Mondays, yesterday is Sunday, so WTD is the full Mon–Sun week just ended) "
-                    "vs **P4WA**: the same mix on **all calls in the four prior full Mon–Sun weeks** (pooled). "
-                    "Ignores date filter · sidebar filters apply. "
-                    f"WTD: {_ws_mix:%b %d}–{_asof_mix:%b %d}."
-                )
-
             def _wk_mix(fn):
                 return wtd_vs_four_week_pooled(df_nodatefilter, fn)
 
@@ -710,59 +770,60 @@ with tab_model:
         rec_ts["period_display"] = period_display(rec_ts["period"], _chart_granularity)
         totals = rec_ts.groupby("period")["n"].transform("sum")
         rec_ts["pct"] = rec_ts["n"] / totals * 100
+        rec_ts["value"] = rec_ts["pct"] if rec_mix_metric == "Share of Calls" else rec_ts["n"]
 
-        plan_types = sorted(rec_ts["top_recommended_plan_type"].unique().tolist())
+        plan_types = rec_ts["top_recommended_plan_type"].value_counts().head(rec_mix_top_n).index.tolist()
 
         fig_mix = go.Figure()
         for pt in plan_types:
             sub = rec_ts[rec_ts["top_recommended_plan_type"] == pt]
             fig_mix.add_trace(go.Scatter(
-                x=sub["period_display"], y=sub["pct"],
+                x=sub["period_display"], y=sub["value"],
                 name=pt, mode="lines+markers",
                 line=dict(width=2),
                 marker=dict(size=5),
             ))
-        apply_chart_theme(fig_mix,
+        apply_chart_theme(
+            fig_mix,
             **PAIR_CHART_LAYOUT,
-            yaxis_ticksuffix="%",
+            yaxis_title=rec_mix_metric,
             legend=dict(**PAIR_LEGEND_BELOW),
+            **metric_axis_kwargs(rec_mix_metric),
         )
         st.plotly_chart(fig_mix, use_container_width=True)
 
-        st.caption("Recommendation mix — share of calls (%) per plan type")
         rec_ts_tbl = rec_ts.copy()
         rec_pivot = (
-            rec_ts_tbl.pivot(index="top_recommended_plan_type", columns="period_display", values="pct")
+            rec_ts_tbl[rec_ts_tbl["top_recommended_plan_type"].isin(plan_types)]
+            .pivot(index="top_recommended_plan_type", columns="period_display", values="value")
             .reset_index()
             .rename(columns={"top_recommended_plan_type": "Plan Type"})
         )
         for col in rec_pivot.columns[1:]:
-            rec_pivot[col] = rec_pivot[col].round(1).astype(str) + "%"
-        st.dataframe(
+            rec_pivot[col] = rec_pivot[col].apply(lambda v: format_chart_value(v, rec_mix_metric))
+        render_table_expander(
+            "Data table",
             rec_pivot,
-            use_container_width=True,
-            hide_index=True,
-            height=dataframe_display_height(len(rec_pivot)),
+            "recommendation_mix_pivot.csv",
+            key_suffix="model_rec_mix",
         )
-        table_export_row(rec_pivot, "recommendation_mix_pivot.csv", key_suffix="model_rec_mix")
-    else:
+    elif rec_mix_view == "Plan type":
         st.info("call_date or top_recommended_plan_type column missing.")
 
-    # ── NEW: Product-Level Recommendation Mix ─────────────────────────────────
-    st.markdown("---")
-    st.markdown("**Product-Level Recommendation Mix**")
-    st.caption(
-        "Share of calls (%) where a specific product appears in the Diamond or Gold rec slot over time. "
-        "Use the dropdowns to filter by pitch slot and specific products."
-    )
+    if rec_mix_view == "Product":
+        st.markdown(
+            "**Product-Level Mix**",
+            help=(
+                "Share or count of calls where a specific product appears in the Diamond or Gold recommendation slot."
+            ),
+        )
 
-    # Determine which columns hold the ranked product recommendations
-    # Expected: recommended_in_order (list/string of product names in rank order)
-    # and first_pitch_type to identify Diamond vs Gold slot
-    prod_col_candidates = ["recommended_in_order", "pitches_canonical_in_order", "pitches_in_order"]
+    # Determine which columns hold the ranked product recommendations.
+    # Current CSVs expose matched recommendation names as recommended_matched_in_order.
+    prod_col_candidates = ["recommended_in_order", "recommended_matched_in_order"]
     prod_col = next((c for c in prod_col_candidates if c in df.columns), None)
 
-    if prod_col is not None and "call_date" in df.columns:
+    if rec_mix_view == "Product" and prod_col is not None and "call_date" in df.columns:
         # Build a dataframe with diamond product and gold product per call
         prod_df = df.dropna(subset=["call_date"]).copy()
         prod_df["diamond_product"] = prod_df[prod_col].apply(lambda x: _extract_ranked_slot_product(x, 0))
@@ -774,9 +835,10 @@ with tab_model:
         pml_c1, pml_c2 = st.columns(2)
         with pml_c1:
             pm_slot = st.selectbox(
-                "Pitch Slot",
+                "Recommendation Slot",
                 options=["Diamond", "Gold"],
                 key="pm_slot",
+                help="Recommendation slot to plot: Diamond is slot 1; Gold is slot 2.",
             )
         with pml_c2:
             slot_product_opts = all_diamond_products if pm_slot == "Diamond" else all_gold_products
@@ -785,6 +847,7 @@ with tab_model:
                 options=slot_product_opts,
                 default=[],
                 key="pm_products",
+                help="Leave blank to show the top 10 products by volume for the selected slot.",
             )
 
         slot_product_col = "diamond_product" if pm_slot == "Diamond" else "gold_product"
@@ -796,7 +859,7 @@ with tab_model:
         else:
             # Show top 10 by frequency to avoid chart overload
             top_products = (
-                pm_df[slot_product_col].value_counts().head(10).index.tolist()
+                pm_df[slot_product_col].value_counts().head(rec_mix_top_n).index.tolist()
             )
             pm_df = pm_df[pm_df[slot_product_col].isin(top_products)]
             products_to_plot = top_products
@@ -820,6 +883,7 @@ with tab_model:
             )
             pm_ts = pm_ts.merge(period_totals, on="period", how="left")
             pm_ts["pct"] = pm_ts["n"] / pm_ts["total"] * 100
+            pm_ts["value"] = pm_ts["pct"] if rec_mix_metric == "Share of Calls" else pm_ts["n"]
             pm_ts["period_display"] = period_display(pm_ts["period"], _chart_granularity)
 
             fig_pm = go.Figure()
@@ -829,21 +893,22 @@ with tab_model:
                     continue
                 fig_pm.add_trace(go.Scatter(
                     x=sub["period_display"],
-                    y=sub["pct"],
+                    y=sub["value"],
                     name=prod,
                     mode="lines+markers",
                     line=dict(width=2),
                     marker=dict(size=5),
                 ))
-            apply_chart_theme(fig_pm,
+            apply_chart_theme(
+                fig_pm,
                 **PAIR_CHART_LAYOUT,
-                yaxis_ticksuffix="%",
                 legend=dict(**PAIR_LEGEND_BELOW),
-                yaxis_title=f"% of calls with product in {pm_slot} slot",
+                yaxis_title=rec_mix_metric,
+                **metric_axis_kwargs(rec_mix_metric),
             )
             st.plotly_chart(fig_pm, use_container_width=True)
             pm_pivot = (
-                pm_ts.pivot_table(index=slot_product_col, columns="period_display", values="pct", aggfunc="mean")
+                pm_ts.pivot_table(index=slot_product_col, columns="period_display", values="value", aggfunc="sum")
                 .fillna(0)
                 .round(1)
                 .reset_index()
@@ -851,29 +916,25 @@ with tab_model:
             )
             pm_disp = pm_pivot.copy()
             for _col in pm_disp.columns[1:]:
-                pm_disp[_col] = pm_disp[_col].astype(str) + "%"
-            st.caption(f"Product mix ({pm_slot} slot) — share of calls (%) per period (same scope as the chart above)")
-            st.dataframe(
+                pm_disp[_col] = pm_disp[_col].apply(lambda v: format_chart_value(v, rec_mix_metric))
+            render_table_expander(
+                "Data table",
                 pm_disp,
-                use_container_width=True,
-                hide_index=True,
-                height=dataframe_display_height(len(pm_disp)),
+                "product_level_rec_mix_pivot.csv",
+                key_suffix="model_pm_mix",
             )
-            table_export_row(pm_disp, "product_level_rec_mix_pivot.csv", key_suffix="model_pm_mix")
-            if not pm_products:
-                st.caption(f"Showing top 10 products by volume in the {pm_slot} slot. Use the filter above to select specific products.")
         else:
             st.info("No data available for the selected slot / product combination.")
-    else:
-        st.info("Product recommendation column not found. Expected one of: recommended_in_order, pitches_canonical_in_order, pitches_in_order.")
+    elif rec_mix_view == "Product":
+        st.info("Product recommendation column not found. Expected one of: recommended_in_order, recommended_matched_in_order.")
 
     st.divider()
-    st.subheader("Custom period comparison — recommendation mix")
-    st.caption(
-        "Compare **share of calls (%)** for each category between a **Pre** and **Post** window. "
-        "Pickers span the **full** `call_date` range in the extract (sidebar **date** filter does not apply). "
-        "Counts still use other sidebar filters only. Defaults: **Post** = latest full Mon–Sun week vs raw max; "
-        "**Pre** = four Mon–Sun weeks before that. **% change vs pre** is relative to the pre-period share."
+    st.subheader(
+        "Recommendation Mix Comparison",
+        help=(
+            "Compare category share between Pre and Post windows. Date pickers span the full raw call_date range; "
+            "other sidebar filters still apply. % change is relative to the pre-period share."
+        ),
     )
     df_mcmp = df_nodatefilter.dropna(subset=["call_date"]).copy()
     if "call_date" not in df_raw.columns or df_raw["call_date"].isna().all():
@@ -892,25 +953,27 @@ with tab_model:
         _mo_pre_default, _mo_post_default = streamlit_safe_period_defaults(mod_max, mod_min)
 
         prod_col_m = next(
-            (c for c in ("recommended_in_order", "pitches_canonical_in_order", "pitches_in_order") if c in df_mcmp.columns),
+            (c for c in ("recommended_in_order", "recommended_matched_in_order") if c in df_mcmp.columns),
             None,
         )
         mix_mode_opts = ["Plan type (#1 recommendation)"]
         if prod_col_m is not None:
-            mix_mode_opts.append("Product (ranked pitch slot)")
+            mix_mode_opts.append("Product (ranked recommendation slot)")
         mix_cmp_mode = st.radio(
             "Mix to compare",
             mix_mode_opts,
             horizontal=True,
             key="model_mix_cmp_mode",
+            help="Compare mix by top plan type or, when available, by product in a ranked recommendation slot.",
         )
         slot_idx_m = 0
         if mix_cmp_mode.startswith("Product"):
             slot_cmp = st.selectbox(
-                "Pitch slot",
+                "Recommendation slot",
                 ["Diamond", "Gold"],
                 index=0,
                 key="model_mix_cmp_slot",
+                help="Diamond is recommendation slot 1; Gold is recommendation slot 2.",
             )
             slot_idx_m = 0 if slot_cmp == "Diamond" else 1
 
@@ -922,6 +985,7 @@ with tab_model:
                 min_value=mod_min,
                 max_value=mod_max,
                 key="model_mix_cmp_pre_range",
+                help="Baseline window for the comparison.",
             )
         with mo_c2:
             mo_post = st.date_input(
@@ -930,6 +994,7 @@ with tab_model:
                 min_value=mod_min,
                 max_value=mod_max,
                 key="model_mix_cmp_post_range",
+                help="Current or test window for the comparison.",
             )
 
         def _mo_slice(d0: date, d1: date):
@@ -1026,36 +1091,24 @@ with tab_model:
     st.divider()
 
     # ── Section 2: Model Confidence & Raw Conversion Probabilities ────────────
-    st.subheader("Model Confidence & Raw Conversion Probabilities")
-    st.caption(
-        "The model outputs raw conversion probabilities for Fixed, Tiered, and Bundled on every call, "
-        "which are combined with plan points to produce expected-points scores and a ranked recommendation. "
-        "This section examines those raw outputs: how confident the model is, whether that confidence is "
-        "warranted, and what happens when agents follow or ignore high-confidence recommendations."
+    st.subheader(
+        "Model Confidence & Raw Conversion Probabilities",
+        help=(
+            "Raw conversion probabilities feed expected-points scores and ranked recommendations. "
+            "Use the view selector to inspect one diagnostic at a time."
+        ),
     )
 
     prob_cols_needed = {
         "call_date",
         "raw_prob_fixed", "raw_prob_tiered", "raw_prob_bundled",
-        "expected_points_gap_1_2", "top_recommended_plan_type",
-        "classification_bucket", "adhered_call", "order_count",
+        "expected_points_gap_1_2", "first_pitch_type", "order_count",
         "gcv_on_first_pitch", "gcv",
     }
 
     if prob_cols_needed.issubset(df.columns):
-
-        GAP_LABELS = ["Q1\nLowest", "Q2", "Q3", "Q4", "Q5\nHighest"]
-
         _wdf_prob = df_nodatefilter
         _wk_prob = lambda fn: wtd_vs_four_week_pooled(_wdf_prob, fn)
-
-        if "call_date" in _wdf_prob.columns and not _wdf_prob.dropna(subset=["call_date"]).empty:
-            _asof_p = min(report_through_date(), pd.to_datetime(_wdf_prob["call_date"].max()).date())
-            _ws_p = monday_of_week_containing(_asof_p)
-            st.caption(
-                f"WTD ({_ws_p:%b %d}–{_asof_p:%b %d}) vs **P4WA** (four prior full Mon–Sun weeks, pooled) · "
-                "ignores date filter · sidebar filters apply."
-            )
 
         ra_cols = st.columns(4)
         for i, (pt, col) in enumerate([("Fixed", "raw_prob_fixed"), ("Tiered", "raw_prob_tiered"),
@@ -1063,10 +1116,10 @@ with tab_model:
             if col in _wdf_prob.columns:
                 cur_p, pool_p = _wk_prob(lambda d, c=col: d[c].mean() * 100 if c in d.columns else float("nan"))
                 ra_cols[i].metric(
-                    f"Avg P(convert) — {pt}",
+                    f"Avg P(convert) - {pt}",
                     fmt_metric_val_pct(cur_p),
                     delta=wk_pct_delta_vs_avg(cur_p, pool_p),
-                    help="Mean raw conversion probability — WTD vs P4WA (pooled four prior weeks).",
+                    help="Mean raw conversion probability - WTD vs P4WA.",
                 )
         cur_gap, pool_gap = _wk_prob(
             lambda d: d["expected_points_gap_1_2"].mean() if "expected_points_gap_1_2" in d.columns else float("nan")
@@ -1076,159 +1129,162 @@ with tab_model:
             "Avg Confidence Gap",
             f"{_gap_val} pts" if _gap_val != "—" else "—",
             delta=wk_pct_delta_vs_avg(cur_gap, pool_gap),
-            help="Mean expected-points gap #1 vs #2 — WTD vs P4WA.",
+            help="Mean expected-points gap #1 vs #2 - WTD vs P4WA.",
         )
 
-        st.markdown("**Raw Probability Distributions**")
-        st.caption(
-            "Left: violin plots of each product's raw conversion probability across all calls, regardless "
-            "of what was recommended. Right: histogram of the expected-points gap between #1 and #2 recommendations."
-        )
-        rb1, rb2 = st.columns(2)
+        conf_c1, conf_c2 = st.columns([1.4, 1])
+        with conf_c1:
+            conf_view = st.selectbox(
+                "View",
+                ["Raw Probabilities", "Confidence Gap Distribution", "Tier Mix by Gap", "Outcome by Gap"],
+                key="confidence_view",
+                help="Choose one confidence diagnostic to show.",
+            )
+        with conf_c2:
+            conf_metric_choice = st.selectbox(
+                "Outcome metric",
+                ["1st Pitch CR", "Overall CR", "GCV / Call"],
+                key="conf_gap_metric",
+                help="Used when the selected view is Outcome by Gap.",
+            )
 
-        with rb1:
+        if conf_view == "Raw Probabilities":
             fig_violin = go.Figure()
             for pt, col in [("Fixed", "raw_prob_fixed"), ("Tiered", "raw_prob_tiered"), ("Bundled", "raw_prob_bundled")]:
-                if col in df.columns:
-                    fig_violin.add_trace(go.Violin(
-                        y=df[col].dropna(),
-                        name=pt,
-                        box_visible=True,
-                        meanline_visible=True,
-                        points=False,
-                    ))
-            apply_chart_theme(fig_violin,
+                fig_violin.add_trace(go.Violin(
+                    y=df[col].dropna(),
+                    name=pt,
+                    box_visible=True,
+                    meanline_visible=True,
+                    points=False,
+                ))
+            apply_chart_theme(
+                fig_violin,
                 **PAIR_CHART_LAYOUT,
                 yaxis_title="Raw Conversion Probability",
                 yaxis_tickformat=".0%",
-                showlegend=False,
+                legend=dict(**PAIR_LEGEND_BELOW),
             )
             st.plotly_chart(fig_violin, use_container_width=True)
 
-        with rb2:
+        elif conf_view == "Confidence Gap Distribution":
             gap_vals = df["expected_points_gap_1_2"].dropna()
-            p25, p75 = gap_vals.quantile(0.25), gap_vals.quantile(0.75)
-            pct_low  = (gap_vals < p25).mean() * 100
-            pct_high = (gap_vals > p75).mean() * 100
-            fig_hist = go.Figure()
-            _hist_stroke, _ = chart_hist_stroke_and_title()
-            fig_hist.add_trace(
-                go.Histogram(
+            if gap_vals.empty:
+                st.info("No confidence gap values in view.")
+            else:
+                p25, p75 = gap_vals.quantile(0.25), gap_vals.quantile(0.75)
+                pct_low  = (gap_vals < p25).mean() * 100
+                pct_high = (gap_vals > p75).mean() * 100
+                fig_hist = go.Figure()
+                _hist_stroke, _ = chart_hist_stroke_and_title()
+                fig_hist.add_trace(go.Histogram(
                     x=gap_vals,
                     nbinsx=40,
                     marker_color=PLOT_COLORWAY[0],
                     marker_line_width=1,
                     marker_line_color=_hist_stroke,
                     opacity=0.8,
-                )
-            )
-            fig_hist.add_vline(x=float(p25), line_dash="dash", line_color=chart_hline_reference(),
-                               annotation_text=f"25th ({p25:.2f})", annotation_position="top right",
-                               annotation_font_color=chart_muted())
-            fig_hist.add_vline(x=float(p75), line_dash="dash", line_color=chart_hline_reference(),
-                               annotation_text=f"75th ({p75:.2f})", annotation_position="top left",
-                               annotation_font_color=chart_muted())
-            apply_chart_theme(fig_hist,
-                **PAIR_CHART_LAYOUT,
-                xaxis_title="Expected Points Gap (#1 vs #2)",
-                yaxis_title="Calls",
-                showlegend=False,
-            )
-            st.plotly_chart(fig_hist, use_container_width=True)
-
-        st.caption(
-            f"**{pct_low:.0f}%** of calls are low-confidence (gap < {p25:.2f} pts) · "
-            f"**{pct_high:.0f}%** are high-confidence (gap > {p75:.2f} pts)"
-        )
-
-        st.markdown("**Does Model Confidence Predict Outcome? — By Confidence Gap Quintile**")
-        st.caption(
-            "Calls bucketed by the model's confidence gap (expected-points difference between #1 and #2). "
-            "Left: do agents adhere more when the model is confident? "
-            "Right: does following the recommendation pay off more when the model is confident?"
-        )
-
-        df_gap = df.dropna(subset=["expected_points_gap_1_2", "adhered_call"]).copy()
-        df_gap["gap_bucket"] = pd.qcut(
-            df_gap["expected_points_gap_1_2"], q=5,
-            labels=GAP_LABELS, duplicates="drop",
-        )
-
-        metric_choice = st.radio(
-            "Outcome metric",
-            ["1st Pitch CR", "Overall CR", "GCV / Call"],
-            horizontal=True,
-            key="conf_gap_metric",
-        )
-        col_map2 = {"1st Pitch CR": "gcv_on_first_pitch", "Overall CR": "order_count", "GCV / Call": "gcv"}
-        df_gap2 = df_gap[df_gap["classification_bucket"].isin(["Adherence", "Slide"])].copy()
-        gap_out = None
-        is_dollar = metric_choice == "GCV / Call"
-        if len(df_gap2) > 0:
-            gap_out = (
-                df_gap2.groupby(["gap_bucket", "classification_bucket"], observed=True)
-                .agg(val=(col_map2[metric_choice],
-                      lambda x: x.mean() if metric_choice == "GCV / Call" else (x > 0).mean() * 100),
-                     calls=("gcv", "count"))
-                .reset_index()
-            )
-
-        rd1, rd2 = st.columns(2)
-
-        with rd1:
-            adh_by_gap = (
-                df_gap.groupby("gap_bucket", observed=True)
-                .agg(
-                    adherence=("adhered_call", "mean"),
-                    calls=("adhered_call", "count"),
-                    gap_med=("expected_points_gap_1_2", "median"),
-                )
-                .reset_index()
-            )
-            fig_adh_gap = go.Figure()
-            fig_adh_gap.add_trace(go.Bar(
-                x=adh_by_gap["gap_bucket"].astype(str),
-                y=adh_by_gap["adherence"] * 100,
-                text=(adh_by_gap["adherence"] * 100).round(1).astype(str) + "%",
-                textposition="outside",
-                textfont=bar_outside_textfont(),
-                marker_color=PLOT_COLORWAY[0],
-                marker_line_width=0,
-                customdata=adh_by_gap[["calls", "gap_med"]],
-                hovertemplate="Calls: %{customdata[0]:,}<br>Median gap: %{customdata[1]:.2f}<extra></extra>",
-            ))
-            apply_chart_theme(fig_adh_gap,
-                **PAIR_CHART_LAYOUT,
-                xaxis_title="Confidence Gap Quintile",
-                yaxis_title="Adherence Rate",
-                yaxis_ticksuffix="%",
-                showlegend=False,
-            )
-            st.plotly_chart(fig_adh_gap, use_container_width=True)
-
-        with rd2:
-            if gap_out is not None and len(gap_out) > 0:
-                fig_out = go.Figure()
-                for label, dash in [("Adherence", "solid"), ("Slide", "dot")]:
-                    sub = gap_out[gap_out["classification_bucket"] == label]
-                    fig_out.add_trace(go.Scatter(
-                        x=sub["gap_bucket"].astype(str),
-                        y=sub["val"],
-                        name=label,
-                        mode="lines+markers",
-                        line=dict(dash=dash, width=2),
-                        marker=dict(size=5),
-                    ))
-                apply_chart_theme(fig_out,
+                ))
+                fig_hist.add_vline(x=float(p25), line_dash="dash", line_color=chart_hline_reference(),
+                                   annotation_text=f"25th ({p25:.2f})", annotation_position="top right",
+                                   annotation_font_color=chart_muted())
+                fig_hist.add_vline(x=float(p75), line_dash="dash", line_color=chart_hline_reference(),
+                                   annotation_text=f"75th ({p75:.2f})", annotation_position="top left",
+                                   annotation_font_color=chart_muted())
+                apply_chart_theme(
+                    fig_hist,
                     **PAIR_CHART_LAYOUT,
-                    xaxis_title="Confidence Gap Quintile",
-                    yaxis_tickprefix="$" if is_dollar else "",
-                    yaxis_ticksuffix="" if is_dollar else "%",
-                    legend=dict(**PAIR_LEGEND_BELOW),
+                    xaxis_title="Expected Points Gap (#1 vs #2)",
+                    yaxis_title="Calls",
+                    showlegend=False,
                 )
-                st.plotly_chart(fig_out, use_container_width=True)
+                st.plotly_chart(fig_hist, use_container_width=True)
+                st.caption(
+                    f"**{pct_low:.0f}%** low-confidence (gap < {p25:.2f} pts) · "
+                    f"**{pct_high:.0f}%** high-confidence (gap > {p75:.2f} pts)"
+                )
+
+        else:
+            df_gap = df.dropna(subset=["expected_points_gap_1_2", "first_pitch_type"]).copy()
+            unique_gaps = df_gap["expected_points_gap_1_2"].nunique(dropna=True)
+            if df_gap.empty or unique_gaps < 2:
+                st.info("Not enough confidence gap variation for quintile analysis.")
             else:
-                st.info("No Adherence / Slide calls in view for this outcome chart.")
+                q = min(5, unique_gaps)
+                bucket_codes = pd.qcut(df_gap["expected_points_gap_1_2"], q=q, labels=False, duplicates="drop")
+                df_gap["gap_bucket"] = bucket_codes.apply(lambda x: f"Q{int(x) + 1}" if pd.notna(x) else pd.NA)
+                df_gap = df_gap.dropna(subset=["gap_bucket"])
+
+                if conf_view == "Tier Mix by Gap":
+                    mix = (
+                        df_gap[df_gap["first_pitch_type"].isin(SALE_TIER_ORDER)]
+                        .groupby(["gap_bucket", "first_pitch_type"], observed=True)
+                        .size()
+                        .reset_index(name="n")
+                    )
+                    totals = mix.groupby("gap_bucket")["n"].transform("sum")
+                    mix["value"] = mix["n"] / totals.replace(0, pd.NA) * 100
+                    fig_mix_gap = go.Figure()
+                    for tier in SALE_TIER_ORDER:
+                        sub = mix[mix["first_pitch_type"] == tier]
+                        if sub.empty:
+                            continue
+                        fig_mix_gap.add_trace(go.Bar(
+                            x=sub["gap_bucket"],
+                            y=sub["value"],
+                            name=tier,
+                            text=sub["value"].round(1).astype(str) + "%",
+                            textposition="outside",
+                            textfont=bar_outside_textfont(),
+                        ))
+                    apply_chart_theme(
+                        fig_mix_gap,
+                        **PAIR_CHART_LAYOUT,
+                        barmode="group",
+                        xaxis_title="Confidence Gap Quintile",
+                        yaxis_title="Tier Mix",
+                        yaxis_ticksuffix="%",
+                        legend=dict(**PAIR_LEGEND_BELOW),
+                    )
+                    st.plotly_chart(fig_mix_gap, use_container_width=True)
+
+                else:
+                    col_map2 = {"1st Pitch CR": "gcv_on_first_pitch", "Overall CR": "order_count", "GCV / Call": "gcv"}
+                    is_dollar = conf_metric_choice == "GCV / Call"
+                    gap_out = (
+                        df_gap[df_gap["first_pitch_type"].isin(SALE_TIER_ORDER)]
+                        .groupby(["gap_bucket", "first_pitch_type"], observed=True)
+                        .agg(val=(col_map2[conf_metric_choice],
+                                  lambda x: x.mean() if conf_metric_choice == "GCV / Call" else (x > 0).mean() * 100),
+                             calls=("gcv", "count"))
+                        .reset_index()
+                    )
+                    if gap_out.empty:
+                        st.info("No tiered pitch calls in view for this outcome chart.")
+                    else:
+                        fig_out = go.Figure()
+                        for tier in SALE_TIER_ORDER:
+                            sub = gap_out[gap_out["first_pitch_type"] == tier]
+                            if sub.empty:
+                                continue
+                            fig_out.add_trace(go.Scatter(
+                                x=sub["gap_bucket"],
+                                y=sub["val"],
+                                name=tier,
+                                mode="lines+markers",
+                                line=dict(width=2),
+                                marker=dict(size=5),
+                            ))
+                        apply_chart_theme(
+                            fig_out,
+                            **PAIR_CHART_LAYOUT,
+                            xaxis_title="Confidence Gap Quintile",
+                            yaxis_title=conf_metric_choice,
+                            yaxis_tickprefix="$" if is_dollar else "",
+                            yaxis_ticksuffix="" if is_dollar else "%",
+                            legend=dict(**PAIR_LEGEND_BELOW),
+                        )
+                        st.plotly_chart(fig_out, use_container_width=True)
 
     else:
         missing = prob_cols_needed - set(df.columns)
@@ -1236,157 +1292,81 @@ with tab_model:
 
     st.divider()
 
-    # ── Section 3: Top Rec vs. Slide Conversion Comparison ───────────────────
-    st.subheader("Top Rec vs. Slide — Conversion & Value Comparison")
-    st.caption(
-        "Compares calls where the agent pitched the model's top recommendation first "
-        "(Adherence) versus calls where they pitched the slide product first (Slide)."
+    # ── Section 3: Tier Outcome Snapshot ─────────────────────────────────────
+    st.subheader(
+        "Pitch Tier Outcomes",
+        help="Compare conversion and value outcomes by the Diamond, Gold, Silver, and Bronze first-pitch tiers.",
     )
 
-    needed = {"call_date", "classification_bucket", "gcv_on_first_pitch", "order_count", "gcv"}
+    needed = {"call_date", "first_pitch_type", "gcv_on_first_pitch", "order_count", "gcv"}
 
     if needed.issubset(df.columns):
-        top_df   = df[df["classification_bucket"] == "Adherence"]
-        slide_df = df[df["classification_bucket"] == "Slide"]
-
-        def safe_mean(s):
-            return s.mean() if len(s) else float("nan")
-
-        top_fp_cr    = (top_df["gcv_on_first_pitch"] > 0).mean() * 100
-        slide_fp_cr  = (slide_df["gcv_on_first_pitch"] > 0).mean() * 100
-        top_cr       = (top_df["order_count"] > 0).mean() * 100
-        slide_cr     = (slide_df["order_count"] > 0).mean() * 100
-        top_gcv      = safe_mean(top_df["gcv"])
-        slide_gcv    = safe_mean(slide_df["gcv"])
-        # FIX: GCV / 1st Pitch = total first-pitch GCV / all calls (expected value, not conditional mean)
-        top_gcv_fp   = safe_mean(top_df["gcv_on_first_pitch"])
-        slide_gcv_fp = safe_mean(slide_df["gcv_on_first_pitch"])
+        tier_metric = st.selectbox(
+            "Metric",
+            PERFORMANCE_METRICS,
+            key="model_tier_outcome_metric",
+            help="Outcome metric to compare across first-pitched tiers.",
+        )
 
         _wdf_ts = df_nodatefilter
         _wk_ts = lambda fn: wtd_vs_four_week_pooled(_wdf_ts, fn)
 
-        def _fp_cr_bucket(d, bucket):
-            sub = d[d["classification_bucket"] == bucket]
+        def _tier_metric(d, tier, metric):
+            sub = d[d["first_pitch_type"] == tier]
             if sub.empty:
                 return float("nan")
-            return (sub["gcv_on_first_pitch"] > 0).mean() * 100
+            return calc_performance_metric(sub, metric)
 
-        def _gcv_call_bucket(d, bucket):
-            sub = d[d["classification_bucket"] == bucket]
-            if sub.empty or "gcv" not in sub.columns:
-                return float("nan")
-            return sub["gcv"].mean()
-
-        cur_t_f, p_t_f = _wk_ts(lambda d: _fp_cr_bucket(d, "Adherence"))
-        cur_s_f, p_s_f = _wk_ts(lambda d: _fp_cr_bucket(d, "Slide"))
-        cur_t_g, p_t_g = _wk_ts(lambda d: _gcv_call_bucket(d, "Adherence"))
-        cur_s_g, p_s_g = _wk_ts(lambda d: _gcv_call_bucket(d, "Slide"))
-
-        if "call_date" in _wdf_ts.columns and not _wdf_ts.dropna(subset=["call_date"]).empty:
-            _asof_ts = min(report_through_date(), pd.to_datetime(_wdf_ts["call_date"].max()).date())
-            _ws_ts = monday_of_week_containing(_asof_ts)
-            st.caption(
-                f"**WTD** ({_ws_ts:%b %d}–{_asof_ts:%b %d}) vs **P4WA** on KPI row (pooled four prior Mon–Sun weeks) · "
-                "ignores date filter. Bar charts use the sidebar date range."
+        ca_cols = st.columns(4)
+        for i, tier in enumerate(SALE_TIER_ORDER):
+            cur_v, pool_v = _wk_ts(lambda d, t=tier: _tier_metric(d, t, tier_metric))
+            ca_cols[i].metric(
+                tier,
+                format_chart_value(cur_v, tier_metric),
+                delta=wk_pct_delta_vs_avg(cur_v, pool_v),
+                help=f"WTD {tier_metric} for {tier} first-pitched calls vs pooled P4WA.",
             )
 
-        ca1, ca2, ca3, ca4 = st.columns(4)
-        ca1.metric(
-            "Top Rec — 1st Pitch CR",
-            fmt_metric_val_pct(cur_t_f),
-            delta=wk_pct_delta_vs_avg(cur_t_f, p_t_f),
-            help=(
-                f"WTD vs P4WA. In current date range: {top_fp_cr:.1f}% vs Slide {slide_fp_cr:.1f}% "
-                f"({top_fp_cr - slide_fp_cr:+.1f}pp)."
-            ),
-        )
-        ca2.metric(
-            "Slide — 1st Pitch CR",
-            fmt_metric_val_pct(cur_s_f),
-            delta=wk_pct_delta_vs_avg(cur_s_f, p_s_f),
-            help=f"In current date range: {slide_fp_cr:.1f}%.",
-        )
-        ca3.metric(
-            "Top Rec — GCV / Call",
-            fmt_metric_val_dollar(cur_t_g),
-            delta=wk_pct_delta_vs_avg(cur_t_g, p_t_g),
-            help=(
-                f"WTD vs P4WA. In current date range: ${top_gcv:,.0f} vs Slide ${slide_gcv:,.0f} "
-                f"(${top_gcv - slide_gcv:+,.0f})."
-            ),
-        )
-        ca4.metric(
-            "Slide — GCV / Call",
-            fmt_metric_val_dollar(cur_s_g),
-            delta=wk_pct_delta_vs_avg(cur_s_g, p_s_g),
-            help=f"In current date range: ${slide_gcv:,.0f}.",
+        tier_out = pd.DataFrame(
+            [
+                {
+                    "Tier": tier,
+                    "Value": calc_performance_metric(df[df["first_pitch_type"] == tier], tier_metric),
+                    "Calls": len(df[df["first_pitch_type"] == tier]),
+                }
+                for tier in SALE_TIER_ORDER
+            ]
         )
 
-        cb1, cb2 = st.columns(2)
-
-        with cb1:
-            st.markdown("**Conversion Rate**")
-            fig_cr = go.Figure()
-            fig_cr.add_trace(go.Bar(
-                name="Top Rec", x=["1st Pitch CR", "Overall CR"],
-                y=[top_fp_cr, top_cr],
-                text=[f"{top_fp_cr:.1f}%", f"{top_cr:.1f}%"], textposition="outside",
-                textfont=bar_outside_textfont(),
-                marker_color=PLOT_COLORWAY[0], marker_line_width=0,
-            ))
-            fig_cr.add_trace(go.Bar(
-                name="Slide", x=["1st Pitch CR", "Overall CR"],
-                y=[slide_fp_cr, slide_cr],
-                text=[f"{slide_fp_cr:.1f}%", f"{slide_cr:.1f}%"], textposition="outside",
-                textfont=bar_outside_textfont(),
-                marker_color=PLOT_COLORWAY[1], marker_line_width=0,
-            ))
-            apply_chart_theme(fig_cr,
-                **PAIR_CHART_LAYOUT,
-                barmode="group", yaxis_ticksuffix="%",
-                legend=dict(**PAIR_LEGEND_BELOW),
-            )
-            st.plotly_chart(fig_cr, use_container_width=True)
-
-        with cb2:
-            st.markdown("**GCV**")
-            fig_gcv = go.Figure()
-            fig_gcv.add_trace(go.Bar(
-                name="Top Rec", x=["GCV / Call", "GCV / 1st Pitch"],
-                y=[top_gcv, top_gcv_fp],
-                text=[f"${top_gcv:,.0f}", f"${top_gcv_fp:,.0f}"], textposition="outside",
-                textfont=bar_outside_textfont(),
-                marker_color=PLOT_COLORWAY[0], marker_line_width=0,
-            ))
-            fig_gcv.add_trace(go.Bar(
-                name="Slide", x=["GCV / Call", "GCV / 1st Pitch"],
-                y=[slide_gcv, slide_gcv_fp],
-                text=[f"${slide_gcv:,.0f}", f"${slide_gcv_fp:,.0f}"], textposition="outside",
-                textfont=bar_outside_textfont(),
-                marker_color=PLOT_COLORWAY[1], marker_line_width=0,
-            ))
-            apply_chart_theme(fig_gcv,
-                **PAIR_CHART_LAYOUT,
-                barmode="group", yaxis_tickprefix="$",
-                legend=dict(**PAIR_LEGEND_BELOW),
-            )
-            st.plotly_chart(fig_gcv, use_container_width=True)
-
-        st.caption(
-            "GCV / 1st Pitch = total first-pitch GCV ÷ all calls in group (expected value per call)."
+        fig_tier = go.Figure(go.Bar(
+            x=tier_out["Tier"],
+            y=tier_out["Value"],
+            text=[format_chart_value(v, tier_metric) for v in tier_out["Value"]],
+            textposition="outside",
+            textfont=bar_outside_textfont(),
+            marker_color=PLOT_COLORWAY[:len(tier_out)],
+            marker_line_width=0,
+            customdata=tier_out[["Calls"]],
+            hovertemplate="Calls: %{customdata[0]:,}<extra></extra>",
+        ))
+        apply_chart_theme(
+            fig_tier,
+            **PAIR_CHART_LAYOUT,
+            yaxis_title=tier_metric,
+            showlegend=False,
+            **metric_axis_kwargs(tier_metric),
         )
+        st.plotly_chart(fig_tier, use_container_width=True)
 
-        st.markdown("**Conversion by Plan Type — Top Rec vs. Slide**")
         if "top_recommended_plan_type" in df.columns:
             plan_cmp = (
-                df[df["classification_bucket"].isin(["Adherence", "Slide"])]
-                .groupby(["top_recommended_plan_type", "classification_bucket"])
+                df[df["first_pitch_type"].isin(SALE_TIER_ORDER)]
+                .groupby(["top_recommended_plan_type", "first_pitch_type"])
                 .agg(
-                    calls=("call_id", "count"),
+                    calls=("first_pitch_type", "count"),
                     fp_cr=("gcv_on_first_pitch", lambda x: (x > 0).mean()),
                     overall_cr=("order_count", lambda x: (x > 0).mean()),
                     gcv_call=("gcv", "mean"),
-                    # FIX: GCV / 1st Pitch EV = mean over all calls (zeros included)
                     gcv_fp_ev=("gcv_on_first_pitch", "mean"),
                 )
                 .reset_index()
@@ -1397,20 +1377,20 @@ with tab_model:
             plan_cmp["gcv_fp_ev"]  = plan_cmp["gcv_fp_ev"].round(0).apply(lambda x: f"${x:,.0f}")
             plan_cmp = plan_cmp.rename(columns={
                 "top_recommended_plan_type": "Plan Type",
-                "classification_bucket": "Pitched",
+                "first_pitch_type": "Tier",
                 "calls": "Calls",
                 "fp_cr": "1st Pitch CR",
                 "overall_cr": "Overall CR",
                 "gcv_call": "GCV / Call",
                 "gcv_fp_ev": "GCV / 1st Pitch",
             })
-            st.dataframe(
+            render_table_expander(
+                "Conversion by plan type",
                 plan_cmp,
-                use_container_width=True,
-                hide_index=True,
-                height=dataframe_display_height(len(plan_cmp)),
+                "conversion_by_plan_type_and_tier.csv",
+                key_suffix="model_plan_tier_cmp",
+                height_rows=min(len(plan_cmp), 40),
             )
-            table_export_row(plan_cmp, "conversion_by_plan_type_top_rec_vs_slide.csv", key_suffix="model_plan_cmp")
     else:
         st.info("One or more required columns are missing for this section.")
 
@@ -1421,23 +1401,21 @@ with tab_model:
 with tab_agent:
 
     agent_adherence_type = st.radio(
-        "Adherence type",
+        "Tier source",
         ["First Pitch", "Sale"],
         index=0,
         horizontal=True,
         key="agent_adherence_type",
+        help="First Pitch uses the initial pitched tier. Sale uses the sold product tier among converting calls.",
     )
 
-    df_agent, colspec, agent_eff_mode = prepare_agent_behavior_dataframe(df, agent_adherence_type)
+    df_agent, _, agent_eff_mode = prepare_agent_behavior_dataframe(df, agent_adherence_type)
     df_nodate_agent, _, _ = prepare_agent_behavior_dataframe(df_nodatefilter, agent_adherence_type)
 
     if agent_adherence_type == "Sale" and agent_eff_mode != "Sale":
         st.warning(
-            "Sale-based adherence needs `sale_type`, `order_count`, and top/slide/all-plans pitch-view flags "
-            "on the call-level file. Showing first-pitch adherence instead."
+            "Sale tier needs `sale_type` and `order_count` on the call-level file. Showing first-pitch tiers instead."
         )
-
-    adh_c, sl_c, ap_c, cls_c = colspec["adh"], colspec["slide"], colspec["ap"], colspec["cls"]
 
     if "call_date" in df_nodate_agent.columns and "agent_tier_display" in df_nodate_agent.columns:
         tmp_fp = df_nodate_agent.dropna(subset=["call_date"]).copy()
@@ -1477,191 +1455,123 @@ with tab_agent:
                     help=_help,
                 )
 
-    ah1, ah2 = st.columns(2)
-    with ah1:
-        st.subheader("Adherence Over Time")
-    with ah2:
-        st.subheader(
-            "Sale tier mix over time (among sales)"
-            if agent_eff_mode == "Sale"
-            else "First pitch mix over time"
+    st.subheader(
+        "Tier Trend",
+        help="Trend tier mix or any conversion/value metric by tier, center, quartile, or overall.",
+    )
+
+    tr_c1, tr_c2 = st.columns(2)
+    with tr_c1:
+        agent_trend_metric = st.selectbox(
+            "Metric",
+            ["Tier Mix", "Calls"] + PERFORMANCE_METRICS,
+            key="agent_trend_metric",
+            help="Tier Mix shows each tier's share of calls per period. Other metrics are calculated within each group.",
+        )
+    with tr_c2:
+        group_options = ["Tier", "Overall", "Center", "Agent Quartile"]
+        agent_group_choice = st.selectbox(
+            "Group By",
+            group_options,
+            key="agent_trend_group",
+            help="Controls the line categories for performance metrics. Tier Mix always groups by tier.",
         )
 
-    col1, col2 = st.columns(2)
+    if "call_date" in df_agent.columns:
+        trend_df = df_agent.dropna(subset=["call_date"]).copy()
+        if agent_eff_mode == "Sale" and "order_count" in trend_df.columns:
+            trend_df = trend_df[trend_df["order_count"].fillna(0) > 0]
+        trend_df["period"] = period_labels(trend_df["call_date"], _chart_granularity)
 
-    with col1:
-        if "call_date" in df_agent.columns and adh_c in df_agent.columns:
-            _adh_ts_base = df_agent.dropna(subset=["call_date"])
-            if agent_eff_mode == "Sale" and "order_count" in _adh_ts_base.columns:
-                _adh_ts_base = _adh_ts_base[_adh_ts_base["order_count"].fillna(0) > 0]
-            ts = (
-                _adh_ts_base
-                .assign(period=period_labels(_adh_ts_base["call_date"], _chart_granularity))
-                .groupby("period")
-                .agg(
-                    adherence=(adh_c, "mean"),
-                    slide=(sl_c, "mean"),
-                    all_plans=(ap_c, "mean"),
-                )
-                .reset_index()
-                .sort_values("period")
-            )
-            ts["period_display"] = period_display(ts["period"], _chart_granularity)
-            ts[["adherence", "slide", "all_plans"]] *= 100
+        group_map = {
+            "Tier": "agent_tier_display",
+            "Overall": None,
+            "Center": "center_location",
+            "Agent Quartile": "performance_quartile",
+        }
+        group_col = "agent_tier_display" if agent_trend_metric == "Tier Mix" else group_map[agent_group_choice]
 
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=ts["period_display"], y=ts["adherence"], name="Adherence",
-                                     mode="lines+markers", line=dict(width=2), marker=dict(size=5)))
-            fig.add_trace(go.Scatter(x=ts["period_display"], y=ts["slide"], name="Slide",
-                                     mode="lines+markers", line=dict(dash="dot", width=2), marker=dict(size=5)))
-            fig.add_trace(go.Scatter(x=ts["period_display"], y=ts["all_plans"], name="All Plans",
-                                     mode="lines+markers", line=dict(dash="dash", width=2), marker=dict(size=5)))
-            apply_chart_theme(fig,
-                **PAIR_CHART_LAYOUT,
-                yaxis_ticksuffix="%",
-                legend=dict(**PAIR_LEGEND_BELOW),
-            )
-            st.plotly_chart(fig, use_container_width=True)
-            if agent_eff_mode == "Sale":
-                st.caption("Adherence, slide, and all-plans rates are **among converting calls only** (each line is % of sales).")
-        else:
-            st.info("call_date or adherence columns missing.")
-
-    with col2:
-        if "call_date" in df_agent.columns and "agent_tier_display" in df_agent.columns:
-            tier_order = SALE_TIER_ORDER
-            _mix_base = df_agent.dropna(subset=["call_date"])
-            if agent_eff_mode == "Sale" and "order_count" in _mix_base.columns:
-                _mix_base = _mix_base[_mix_base["order_count"].fillna(0) > 0]
-            _mix_base = _mix_base.dropna(subset=["agent_tier_display"])
-            pitch_ts = (
-                _mix_base
-                .assign(period=period_labels(_mix_base["call_date"], _chart_granularity))
-                .groupby(["period", "agent_tier_display"])
+        if agent_trend_metric == "Tier Mix":
+            mix_df = trend_df.dropna(subset=["agent_tier_display"])
+            trend_ts = (
+                mix_df.groupby(["period", "agent_tier_display"])
                 .size()
                 .reset_index(name="n")
                 .sort_values("period")
             )
-            pitch_ts["period_display"] = period_display(pitch_ts["period"], _chart_granularity)
-            totals = pitch_ts.groupby("period")["n"].transform("sum")
-            pitch_ts["pct"] = pitch_ts["n"] / totals * 100
-
-            fig2 = go.Figure()
-            for pt in tier_order:
-                sub = pitch_ts[pitch_ts["agent_tier_display"] == pt]
-                if sub.empty:
-                    continue
-                fig2.add_trace(go.Scatter(x=sub["period_display"], y=sub["pct"], name=pt,
-                                          mode="lines+markers", line=dict(width=2), marker=dict(size=5)))
-            apply_chart_theme(fig2,
-                **PAIR_CHART_LAYOUT,
-                yaxis_ticksuffix="%",
-                legend=dict(**PAIR_LEGEND_BELOW),
-            )
-            st.plotly_chart(fig2, use_container_width=True)
-            if agent_eff_mode == "Sale":
-                st.caption(
-                    "Each period sums to **100%** over converting calls with a classified **Diamond / Gold / "
-                    "Silver / Bronze** `sale_type` (orders without that classification are excluded)."
-                )
-        else:
-            st.info("call_date or tier display column missing.")
-
-    st.divider()
-
-    # ── Performance over time ─────────────────────────────────────────────────
-    st.subheader("Performance Over Time")
-
-    pot_c1, pot_c2 = st.columns(2)
-    with pot_c1:
-        pot_metric = st.selectbox(
-            "Metric",
-            ["1st Pitch CR", "Overall CR", "GCV / 1st Pitch", "GCV / Call", "RPO"],
-            key="pot_metric",
-        )
-    with pot_c2:
-        fp_type_opts = ["All"] + ["Diamond", "Gold", "Silver", "Bronze"]
-        pot_fp_filter = st.selectbox(
-            "Sale tier" if agent_eff_mode == "Sale" else "First pitch type",
-            fp_type_opts,
-            key="pot_fp_filter",
-        )
-
-    if "call_date" in df_agent.columns:
-        pot_df = df_agent.dropna(subset=["call_date"]).copy()
-
-        if pot_fp_filter != "All" and "agent_tier_display" in pot_df.columns:
-            pot_df = pot_df[pot_df["agent_tier_display"] == pot_fp_filter]
-
-        pot_df["period"] = period_labels(pot_df["call_date"], _chart_granularity)
-
-        def pot_agg(grp):
-            if pot_metric == "1st Pitch CR":
-                return (grp["gcv_on_first_pitch"] > 0).mean() * 100
-            elif pot_metric == "Overall CR":
-                return (grp["order_count"] > 0).mean() * 100
-            elif pot_metric == "GCV / 1st Pitch":
-                # FIX: expected value — mean over ALL calls, zeros included
-                return grp["gcv_on_first_pitch"].mean()
-            elif pot_metric == "GCV / Call":
-                return grp["gcv"].mean()
-            elif pot_metric == "RPO":
-                orders = grp[grp["order_count"] > 0]
-                return orders["gcv"].mean() if len(orders) else float("nan")
-
-        needed_pot = {"gcv_on_first_pitch", "order_count", "gcv"}
-        if needed_pot.issubset(pot_df.columns):
-            pot_ts = (
-                pot_df.groupby("period")
-                .apply(pot_agg)
-                .reset_index()
-                .rename(columns={0: "value"})
+            totals = trend_ts.groupby("period")["n"].transform("sum")
+            trend_ts["value"] = trend_ts["n"] / totals.replace(0, pd.NA) * 100
+            trend_ts["period_display"] = period_display(trend_ts["period"], _chart_granularity)
+            line_values = SALE_TIER_ORDER
+            y_metric = "Tier Mix"
+        elif group_col and group_col in trend_df.columns:
+            trend_ts = (
+                trend_df.dropna(subset=[group_col])
+                .groupby(["period", group_col])
+                .apply(lambda g: calc_performance_metric(g, agent_trend_metric))
+                .reset_index(name="value")
                 .sort_values("period")
             )
-            pot_ts["period_display"] = period_display(pot_ts["period"], _chart_granularity)
-
-            is_dollar = pot_metric in ("GCV / 1st Pitch", "GCV / Call", "RPO")
-            fig_pot = go.Figure()
-            fig_pot.add_trace(go.Scatter(
-                x=pot_ts["period_display"],
-                y=pot_ts["value"],
-                mode="lines+markers",
-                name=pot_metric,
-                line=dict(color=PLOT_COLORWAY[0], width=2),
-                marker=dict(size=5, color=PLOT_COLORWAY[0]),
-                fill="tozeroy",
-                fillcolor=area_fill_primary(),
-            ))
-            apply_chart_theme(fig_pot,
-                **PAIR_CHART_LAYOUT,
-                yaxis_tickprefix="$" if is_dollar else "",
-                yaxis_ticksuffix="" if is_dollar else "%",
-                showlegend=False,
-            )
-            st.plotly_chart(fig_pot, use_container_width=True)
+            trend_ts["period_display"] = period_display(trend_ts["period"], _chart_granularity)
+            line_values = SALE_TIER_ORDER if group_col == "agent_tier_display" else sorted(trend_ts[group_col].dropna().unique().tolist())
+            y_metric = agent_trend_metric
         else:
-            st.info("Required columns missing for this chart.")
+            trend_ts = (
+                trend_df.groupby("period")
+                .apply(lambda g: calc_performance_metric(g, agent_trend_metric))
+                .reset_index(name="value")
+                .sort_values("period")
+            )
+            trend_ts["period_display"] = period_display(trend_ts["period"], _chart_granularity)
+            trend_ts["_overall"] = "Overall"
+            group_col = "_overall"
+            line_values = ["Overall"]
+            y_metric = agent_trend_metric
+
+        if not trend_ts.empty:
+            fig_agent_trend = go.Figure()
+            for line_val in line_values:
+                sub = trend_ts[trend_ts[group_col] == line_val]
+                if sub.empty:
+                    continue
+                fig_agent_trend.add_trace(go.Scatter(
+                    x=sub["period_display"],
+                    y=sub["value"],
+                    name=str(line_val),
+                    mode="lines+markers",
+                    line=dict(width=2),
+                    marker=dict(size=5),
+                ))
+            apply_chart_theme(
+                fig_agent_trend,
+                **PAIR_CHART_LAYOUT,
+                yaxis_title=y_metric,
+                legend=dict(**PAIR_LEGEND_BELOW),
+                **metric_axis_kwargs(y_metric),
+            )
+            st.plotly_chart(fig_agent_trend, use_container_width=True)
+        else:
+            st.info("No data available for the selected trend.")
     else:
         st.info("call_date column missing.")
 
     st.divider()
 
     # ── Period-over-period comparison table ───────────────────────────────────
-    st.subheader("Period-over-Period Comparison")
-    st.caption(
-        "Select two date ranges to compare. Defaults: **Post** = latest full Mon–Sun week in the data; "
-        "**Pre** = the four Mon–Sun weeks before that. Delta cells are green (improvement) or red (decline)."
+    st.subheader(
+        "Period-over-Period Comparison",
+        help=(
+            "Compare Pre and Post date ranges. Defaults use latest full Mon-Sun week for Post and four prior "
+            "Mon-Sun weeks for Pre. Delta cells are green for improvement and red for decline."
+        ),
     )
 
     _pop_core = {
         "call_date", "top_recommended_plan_type",
         "gcv_on_first_pitch", "order_count", "gcv",
     }
-    _pop_fp = {"classification_bucket", "adhered_call", "slide_call", "all_plans_call"}
-    _pop_sale = {
-        "sale_type", "order_count", "has_top_rec_pitch_view",
-        "has_slide_recs_pitch_view", "has_all_plans_pitch_view",
-    }
+    _pop_fp = {"first_pitch_type"}
+    _pop_sale = {"sale_type", "order_count"}
     _pop_needed = _pop_core | (_pop_sale if agent_eff_mode == "Sale" else _pop_fp)
 
     if _pop_needed.issubset(df_raw.columns):
@@ -1681,6 +1591,7 @@ with tab_agent:
                 min_value=raw_min,
                 max_value=raw_max,
                 key="cmp_pre_range",
+                help="Baseline comparison window.",
             )
         with tc2:
             post_range = st.date_input(
@@ -1689,6 +1600,7 @@ with tab_agent:
                 min_value=raw_min,
                 max_value=raw_max,
                 key="cmp_post_range",
+                help="Current or test comparison window.",
             )
 
         if len(pre_range) == 2 and len(post_range) == 2:
@@ -1771,28 +1683,17 @@ with tab_agent:
                 if len(source) == 0:
                     return pd.DataFrame()
 
-                rec_totals = (
+                rows = []
+                grp = (
                     source.dropna(subset=["top_recommended_plan_type"])
                     .groupby("top_recommended_plan_type")
-                    .size()
-                    .rename("rec_total")
                 )
-
-                rows = []
-                for rec_type, behavior, mask_col in [
-                    ("top_recommended_plan_type", "Adhered",   adh_c),
-                    ("top_recommended_plan_type", "Slide",     sl_c),
-                    ("top_recommended_plan_type", "All Plans", ap_c),
-                ]:
-                    grp = (
-                        source.dropna(subset=["top_recommended_plan_type"])
-                        .groupby("top_recommended_plan_type")
-                    )
-                    for rtype, g in grp:
-                        sub = g[g[mask_col] == 1] if mask_col in g.columns else g.iloc[0:0]
+                for rtype, g in grp:
+                    n_rec = len(g)
+                    for tier in SALE_TIER_ORDER:
+                        sub = g[g["agent_tier_display"] == tier] if "agent_tier_display" in g.columns else g.iloc[0:0]
                         n_sub    = len(sub)
-                        n_rec    = len(g)
-                        mix      = n_sub / rec_totals.get(rtype, n_rec) * 100 if rec_totals.get(rtype, 0) > 0 else float("nan")
+                        mix      = n_sub / n_rec * 100 if n_rec > 0 else float("nan")
                         fp_cr    = (sub["gcv_on_first_pitch"] > 0).mean() * 100 if n_sub > 0 else float("nan")
                         ov_cr    = (sub["order_count"] > 0).mean() * 100 if n_sub > 0 else float("nan")
                         # FIX: GCV / 1st Pitch EV = mean over all calls in subset (zeros included)
@@ -1800,7 +1701,7 @@ with tab_agent:
                         gcv_call = sub["gcv"].mean() if n_sub > 0 else float("nan")
                         rows.append({
                             "rec_type": rtype,
-                            "behavior": behavior,
+                            "tier":     tier,
                             "mix":      mix,
                             "fp_cr":    fp_cr,
                             "ov_cr":    ov_cr,
@@ -1816,7 +1717,7 @@ with tab_agent:
 
                 merged = pre_metrics.merge(
                     post_metrics,
-                    on=["rec_type", "behavior"],
+                    on=["rec_type", "tier"],
                     suffixes=("_pre", "_post"),
                 )
 
@@ -1828,20 +1729,20 @@ with tab_agent:
                     ("gcv_call", "GCV / Call",              "dollar", True),
                 ]
 
-                BEH_ORDER = ["Adhered", "Slide", "All Plans"]
+                TIER_ORDER = SALE_TIER_ORDER
                 rec_types = sorted(merged["rec_type"].unique())
 
                 display_rows = []
                 row_idx = 0
                 for rt in rec_types:
-                    for beh in BEH_ORDER:
-                        match = merged[(merged["rec_type"] == rt) & (merged["behavior"] == beh)]
+                    for tier in TIER_ORDER:
+                        match = merged[(merged["rec_type"] == rt) & (merged["tier"] == tier)]
                         if match.empty:
                             continue
                         r = match.iloc[0]
                         row = {
-                            "Rec Type":  rt if beh == "Adhered" else "",
-                            "Behavior":  beh,
+                            "Rec Type":  rt if tier == TIER_ORDER[0] else "",
+                            "Tier":      tier,
                         }
                         for col, label, fmt, hib in METRICS:
                             pre_v  = r[f"{col}_pre"]
@@ -1856,12 +1757,12 @@ with tab_agent:
                 delta_cols = [f"{label} Delta" for _, label, _, _ in METRICS]
                 styler = display_df.style.map(color_delta_cell, subset=delta_cols)
 
-                col_order = ["Rec Type", "Behavior"]
+                col_order = ["Rec Type", "Tier"]
                 for _, label, _, _ in METRICS:
                     col_order += [f"{label} {pre_label}", f"{label} {post_label}", f"{label} Delta"]
 
                 styler = styler.set_properties(**{"text-align": "right"}, subset=col_order[2:])
-                styler = styler.set_properties(**{"text-align": "left"},  subset=["Rec Type", "Behavior"])
+                styler = styler.set_properties(**{"text-align": "left"},  subset=["Rec Type", "Tier"])
 
                 st.dataframe(
                     styler,
@@ -1870,21 +1771,20 @@ with tab_agent:
                     column_order=col_order,
                     height=dataframe_display_height(len(display_df)),
                 )
-                table_export_row(display_df, "agent_period_rec_type_behavior.csv", key_suffix="agent_pop_rec")
+                table_export_row(display_df, "agent_period_rec_type_tier.csv", key_suffix="agent_pop_rec")
 
-                st.subheader("Overall Comparison")
+                st.subheader(
+                    "Overall Comparison",
+                    help="Same period comparison collapsed across recommendation plan types.",
+                )
 
                 def compute_overall_metrics(source):
                     if len(source) == 0:
                         return pd.DataFrame()
                     total_calls = len(source)
                     rows = []
-                    for behavior, mask_col in [
-                        ("Adhered",   adh_c),
-                        ("Slide",     sl_c),
-                        ("All Plans", ap_c),
-                    ]:
-                        sub = source[source[mask_col] == 1] if mask_col in source.columns else source.iloc[0:0]
+                    for tier in SALE_TIER_ORDER:
+                        sub = source[source["agent_tier_display"] == tier] if "agent_tier_display" in source.columns else source.iloc[0:0]
                         n_sub = len(sub)
                         mix      = n_sub / total_calls * 100 if total_calls > 0 else float("nan")
                         fp_cr    = (sub["gcv_on_first_pitch"] > 0).mean() * 100 if n_sub > 0 else float("nan")
@@ -1893,7 +1793,7 @@ with tab_agent:
                         gcv_fp   = sub["gcv_on_first_pitch"].mean() if n_sub > 0 else float("nan")
                         gcv_call = sub["gcv"].mean() if n_sub > 0 else float("nan")
                         rows.append({
-                            "behavior": behavior,
+                            "tier":     tier,
                             "mix":      mix,
                             "fp_cr":    fp_cr,
                             "ov_cr":    ov_cr,
@@ -1906,11 +1806,11 @@ with tab_agent:
                 post_overall = compute_overall_metrics(post_df)
 
                 if not pre_overall.empty and not post_overall.empty:
-                    merged_ov = pre_overall.merge(post_overall, on="behavior", suffixes=("_pre", "_post"))
+                    merged_ov = pre_overall.merge(post_overall, on="tier", suffixes=("_pre", "_post"))
 
                     ov_rows = []
                     for _, r in merged_ov.iterrows():
-                        row = {"Behavior": r["behavior"]}
+                        row = {"Tier": r["tier"]}
                         for col, label, fmt, hib in METRICS:
                             pre_v  = r[f"{col}_pre"]
                             post_v = r[f"{col}_post"]
@@ -1922,12 +1822,12 @@ with tab_agent:
                     ov_df = pd.DataFrame(ov_rows)
                     ov_styler = ov_df.style.map(color_delta_cell, subset=delta_cols)
 
-                    ov_col_order = ["Behavior"]
+                    ov_col_order = ["Tier"]
                     for _, label, _, _ in METRICS:
                         ov_col_order += [f"{label} {pre_label}", f"{label} {post_label}", f"{label} Delta"]
 
                     ov_styler = ov_styler.set_properties(**{"text-align": "right"}, subset=ov_col_order[1:])
-                    ov_styler = ov_styler.set_properties(**{"text-align": "left"},  subset=["Behavior"])
+                    ov_styler = ov_styler.set_properties(**{"text-align": "left"},  subset=["Tier"])
 
                     st.dataframe(
                         ov_styler,
@@ -1936,7 +1836,7 @@ with tab_agent:
                         column_order=ov_col_order,
                         height=dataframe_display_height(len(ov_df)),
                     )
-                    table_export_row(ov_df, "agent_period_overall_behavior.csv", key_suffix="agent_pop_ov")
+                    table_export_row(ov_df, "agent_period_overall_tier.csv", key_suffix="agent_pop_ov")
 
             else:
                 st.info("Not enough data in selected date ranges to compute metrics.")
@@ -1969,7 +1869,7 @@ with tab_agent:
                 .set_properties(**{"text-align": "left"}, subset=["Metric"])
                 .set_properties(**{"text-align": "right"}, subset=[kpi_pre_col, kpi_post_col, kpi_delta_col])
             )
-            st.markdown("**Key Metrics**")
+            st.markdown("**Key Metrics**", help="Overall KPI comparison for the selected Pre and Post windows.")
             st.dataframe(
                 kpi_styler,
                 use_container_width=True,
@@ -1985,11 +1885,11 @@ with tab_agent:
 
     # ── Confusion Matrix ──────────────────────────────────────────────────────
     if agent_eff_mode == "Sale":
-        st.subheader("Confusion Matrix")
-        st.caption(
-            "Converting calls only. Rows: plan type from the **sold** pitch (tier `sale_type` and plan category "
-            "of the converting pitch, using the same rec-slot mapping as the first-pitch matrix). "
-            "Columns: top recommended plan type."
+        st.subheader(
+            "Confusion Matrix",
+            help=(
+                "Converting calls only. Rows show plan type from the sold pitch; columns show top recommended plan type."
+            ),
         )
         cm_needed = {
             "sale_type", "top_recommended_plan_type", "recommended_plan_types_in_order",
@@ -1997,12 +1897,12 @@ with tab_agent:
         }
         _cm_use_sale = True
     else:
-        st.subheader("Confusion matrix — first pitch vs. recommended plan type")
-        st.caption(
-            "Rows: plan type of the rec slot the agent pitched first. "
-            "Columns: top recommended plan type. "
-            "Diagonal cells = agent pitched a rec of the same plan type as the top rec. "
-            "Other row = first pitch was outside all rec slots (Silver / Bronze tier)."
+        st.subheader(
+            "Confusion Matrix",
+            help=(
+                "Rows show the rec-slot plan type pitched first; columns show top recommended plan type. "
+                "Other means first pitch was outside all rec slots."
+            ),
         )
         cm_needed = {
             "first_pitch_type", "first_pitch_plan_category",
@@ -2170,12 +2070,12 @@ with tab_agent:
 # TAB 3 — SALE MIXES
 # ════════════════════════════════════════════════════════════════════════════════
 with tab_sale_mix:
-    # ── Sale Mixes (sold partner / plan among converting calls) ───────────────
-    st.subheader("Sale Mixes")
-    st.caption(
-        "Among **converting calls** only (`order_count` > 0). Uses `sold_partner_name` and `sold_plan_name` "
-        "from the pipeline. Charts and pivot tables respect the sidebar **and** date filter. "
-        "Partner and plan **mix** charts use the selections below (default top 5 each); enable **Other** to bucket the rest."
+    st.subheader(
+        "Sale Mixes",
+        help=(
+            "Among converting calls only. Choose the sale dimension and metric from one chart surface. "
+            "The chart respects sidebar and date filters; comparison uses sidebar filters plus its own date windows."
+        ),
     )
 
     _sm_cols = {"call_date", "order_count", "sold_partner_name", "sold_plan_name"}
@@ -2196,13 +2096,29 @@ with tab_sale_mix:
             include_other: bool,
             other: str = "Other",
         ) -> pd.Series:
-            """Keep values in ``selected`` as-is; optionally map the rest to ``Other``, else NA."""
             sel = frozenset(s for s in selected if s is not None and str(s) != "")
             if not sel:
                 return ser
             if include_other:
                 return ser.where(ser.isin(sel), other)
             return ser.where(ser.isin(sel), pd.NA)
+
+        def _sm_metric_by_group(source: pd.DataFrame, group_col: str, metric: str) -> pd.Series:
+            if source.empty:
+                return pd.Series(dtype=float)
+            if metric == "Share of Sales":
+                return source[group_col].value_counts(normalize=True, dropna=True).mul(100)
+            if metric == "Sales Count":
+                return source[group_col].value_counts(dropna=True).astype(float)
+            grouped = source.dropna(subset=[group_col]).groupby(group_col)
+            if metric == "GCV / Sale":
+                return grouped["gcv"].mean() if "gcv" in source.columns else pd.Series(dtype=float)
+            if metric == "RPO":
+                if "gcv" not in source.columns or "order_count" not in source.columns:
+                    return pd.Series(dtype=float)
+                sums = grouped[["gcv", "order_count"]].sum(numeric_only=True)
+                return sums["gcv"] / sums["order_count"].replace(0, pd.NA)
+            return pd.Series(dtype=float)
 
         sm_sales = df[df["order_count"].fillna(0) > 0].dropna(subset=["call_date"]).copy()
         sm_sales["partner"] = _sm_display_str(sm_sales["sold_partner_name"])
@@ -2214,161 +2130,127 @@ with tab_sale_mix:
             sm_sales["period"] = period_labels(sm_sales["call_date"], _chart_granularity)
             sm_sales["period_display"] = period_display(sm_sales["period"], _chart_granularity)
 
-            st.markdown("### Providers (sold partner)")
-            _pvc = sm_sales["partner"].value_counts()
-            _partner_sig = (len(sm_sales), tuple(_pvc.head(40).items()))
-            if st.session_state.get("sale_mix_partner_sig") != _partner_sig:
-                st.session_state["sale_mix_sel_partners"] = list(_pvc.head(5).index)
-                st.session_state["sale_mix_partner_sig"] = _partner_sig
-            st.multiselect(
-                "Partners in mix",
-                options=list(_pvc.index),
-                key="sale_mix_sel_partners",
-                help="Default: top 5 providers by converting sales. Search to add or remove. "
-                "Unselected providers roll into **Other** when that option is enabled.",
-            )
-            include_other_partners = st.checkbox(
-                "Include **Other** (all providers not selected above)",
-                value=True,
-                key="sale_mix_partner_include_other",
-            )
-            _raw_p = st.session_state.get("sale_mix_sel_partners")
-            _sel_p = list(_raw_p) if _raw_p else list(_pvc.head(5).index)
-            sm_sales["partner_grp"] = _sm_bucket_selected_other(
-                sm_sales["partner"], _sel_p, include_other=include_other_partners
-            )
-            sm_p = (
-                sm_sales.dropna(subset=["partner_grp"])
-                if not include_other_partners
-                else sm_sales
-            )
+            sm_c1, sm_c2, sm_c3, sm_c4 = st.columns([1, 1, 1, 1])
+            with sm_c1:
+                sale_mix_dimension = st.selectbox(
+                    "Dimension",
+                    ["Provider", "Sold Plan"],
+                    key="sale_mix_dimension",
+                    help="Choose whether the chart groups converting sales by partner or by sold plan.",
+                )
+            with sm_c2:
+                sale_mix_metric = st.selectbox(
+                    "Metric",
+                    ["Share of Sales", "Sales Count", "GCV / Sale", "RPO"],
+                    key="sale_mix_metric",
+                    help="Metric to trend for the selected sale dimension.",
+                )
+            with sm_c3:
+                sale_mix_top_n = st.slider(
+                    "Top categories",
+                    3,
+                    20,
+                    5,
+                    key="sale_mix_top_n",
+                    help="Default category selection when the selection list resets.",
+                )
+            with sm_c4:
+                include_other = st.checkbox(
+                    "Include Other",
+                    value=True,
+                    key="sale_mix_include_other",
+                    help="Bucket unselected categories into Other.",
+                )
 
-            st.markdown("#### Partner mix over time (% of sales)")
-            pc = (
-                sm_p.groupby(["period", "period_display", "partner_grp"], observed=True)
-                .size()
-                .reset_index(name="n")
+            dim_key = "partner" if sale_mix_dimension == "Provider" else "plan"
+            axis_lbl = "Partner" if sale_mix_dimension == "Provider" else "Sold plan"
+            vc = sm_sales[dim_key].value_counts()
+            sel_key = f"sale_mix_selected_{dim_key}"
+            sig_key = f"sale_mix_sig_{dim_key}"
+            dim_sig = (len(sm_sales), tuple(vc.head(80).items()), sale_mix_top_n)
+            if st.session_state.get(sig_key) != dim_sig:
+                st.session_state[sel_key] = list(vc.head(sale_mix_top_n).index)
+                st.session_state[sig_key] = dim_sig
+
+            selected_categories = st.multiselect(
+                f"{axis_lbl}s in mix",
+                options=list(vc.index),
+                key=sel_key,
+                help="Search to add or remove categories. Unselected categories roll into Other when enabled.",
             )
-            pt = pc.groupby("period")["n"].transform("sum")
-            pc["pct"] = pc["n"] / pt * 100
-            partners_sorted = sorted(pc["partner_grp"].unique().tolist(), key=lambda x: (x == "Other", x))
-            fig_sm_p = go.Figure()
-            for ptn in partners_sorted:
-                sub = pc[pc["partner_grp"] == ptn].sort_values("period")
+            selected_categories = list(selected_categories) if selected_categories else list(vc.head(sale_mix_top_n).index)
+
+            group_col = "sale_mix_group"
+            sm_sales[group_col] = _sm_bucket_selected_other(
+                sm_sales[dim_key], selected_categories, include_other=include_other
+            )
+            sm_plot = sm_sales if include_other else sm_sales.dropna(subset=[group_col])
+
+            if sale_mix_metric in ("Share of Sales", "Sales Count"):
+                ts = (
+                    sm_plot.groupby(["period", "period_display", group_col], observed=True)
+                    .size()
+                    .reset_index(name="n")
+                )
+                if sale_mix_metric == "Share of Sales":
+                    totals = ts.groupby("period")["n"].transform("sum")
+                    ts["value"] = ts["n"] / totals.replace(0, pd.NA) * 100
+                else:
+                    ts["value"] = ts["n"]
+            else:
+                ts = (
+                    sm_plot.groupby(["period", "period_display", group_col], observed=True)
+                    .agg(gcv_sum=("gcv", "sum"), gcv_mean=("gcv", "mean"), order_sum=("order_count", "sum"), n=("order_count", "size"))
+                    .reset_index()
+                )
+                if sale_mix_metric == "GCV / Sale":
+                    ts["value"] = ts["gcv_mean"]
+                else:
+                    ts["value"] = ts["gcv_sum"] / ts["order_sum"].replace(0, pd.NA)
+
+            cats_sorted = sorted(ts[group_col].dropna().unique().tolist(), key=lambda x: (x == "Other", str(x)))
+            fig_sale = go.Figure()
+            for cat in cats_sorted:
+                sub = ts[ts[group_col] == cat].sort_values("period")
                 if sub.empty:
                     continue
-                fig_sm_p.add_trace(go.Scatter(
+                name = str(cat)
+                fig_sale.add_trace(go.Scatter(
                     x=sub["period_display"],
-                    y=sub["pct"],
-                    name=ptn,
+                    y=sub["value"],
+                    name=name[:44] + ("..." if len(name) > 44 else ""),
                     mode="lines+markers",
                     line=dict(width=2),
                     marker=dict(size=5),
                 ))
             apply_chart_theme(
-                fig_sm_p,
+                fig_sale,
                 **PAIR_CHART_LAYOUT,
-                yaxis_ticksuffix="%",
+                yaxis_title=sale_mix_metric,
                 legend=dict(**PAIR_LEGEND_BELOW),
+                **metric_axis_kwargs(sale_mix_metric),
             )
-            st.plotly_chart(fig_sm_p, use_container_width=True)
+            st.plotly_chart(fig_sale, use_container_width=True)
 
-            piv_p = (
-                pc.pivot_table(index="partner_grp", columns="period_display", values="pct", aggfunc="sum")
+            piv = (
+                ts.pivot_table(index=group_col, columns="period_display", values="value", aggfunc="sum")
                 .fillna(0)
                 .round(1)
+                .reset_index()
+                .rename(columns={group_col: axis_lbl})
             )
-            piv_p = piv_p.reset_index().rename(columns={"partner_grp": "Partner"})
-            st.dataframe(
-                piv_p,
-                use_container_width=True,
-                hide_index=True,
-                height=dataframe_display_height(len(piv_p)),
-            )
-            table_export_row(piv_p, "sale_mix_partner_by_period.csv", key_suffix="sale_mix_piv_p")
-
-            st.markdown("### Sold plans")
-            _plc = sm_sales["plan"].value_counts()
-            _plan_sig = (len(sm_sales), tuple(_plc.head(60).items()))
-            if st.session_state.get("sale_mix_plan_sig") != _plan_sig:
-                st.session_state["sale_mix_sel_plans"] = list(_plc.head(5).index)
-                st.session_state["sale_mix_plan_sig"] = _plan_sig
-            st.multiselect(
-                "Plans in mix",
-                options=list(_plc.index),
-                key="sale_mix_sel_plans",
-                help="Default: top 5 sold plans by volume. Unselected plans roll into **Other** when enabled.",
-            )
-            include_other_plans = st.checkbox(
-                "Include **Other** (all plans not selected above)",
-                value=True,
-                key="sale_mix_plan_include_other",
-            )
-            _raw_pl = st.session_state.get("sale_mix_sel_plans")
-            _sel_pl = list(_raw_pl) if _raw_pl else list(_plc.head(5).index)
-            sm_sales["plan_grp"] = _sm_bucket_selected_other(
-                sm_sales["plan"], _sel_pl, include_other=include_other_plans
-            )
-            sm_pl = (
-                sm_sales.dropna(subset=["plan_grp"])
-                if not include_other_plans
-                else sm_sales
+            piv_disp = piv.copy()
+            for col in piv_disp.columns[1:]:
+                piv_disp[col] = piv_disp[col].apply(lambda v: format_chart_value(v, sale_mix_metric))
+            render_table_expander(
+                "Data table",
+                piv_disp,
+                f"sale_mix_{dim_key}_by_period.csv",
+                key_suffix=f"sale_mix_{dim_key}_period",
+                height_rows=min(len(piv_disp), 40),
             )
 
-            st.markdown("#### Sold plan mix over time (% of sales)")
-            plc = (
-                sm_pl.groupby(["period", "period_display", "plan_grp"], observed=True)
-                .size()
-                .reset_index(name="n")
-            )
-            plt2 = plc.groupby("period")["n"].transform("sum")
-            plc["pct"] = plc["n"] / plt2 * 100
-            plans_sorted = sorted(plc["plan_grp"].unique().tolist(), key=lambda x: (x == "Other", x))
-            fig_sm_pl = go.Figure()
-            for pln in plans_sorted:
-                sub = plc[plc["plan_grp"] == pln].sort_values("period")
-                if sub.empty:
-                    continue
-                fig_sm_pl.add_trace(go.Scatter(
-                    x=sub["period_display"],
-                    y=sub["pct"],
-                    name=pln[:40] + ("…" if len(pln) > 40 else ""),
-                    mode="lines+markers",
-                    line=dict(width=2),
-                    marker=dict(size=4),
-                ))
-            apply_chart_theme(
-                fig_sm_pl,
-                **PAIR_CHART_LAYOUT,
-                yaxis_ticksuffix="%",
-                legend=dict(**PAIR_LEGEND_BELOW),
-            )
-            st.plotly_chart(fig_sm_pl, use_container_width=True)
-
-            piv_pl = (
-                plc.pivot_table(index="plan_grp", columns="period_display", values="pct", aggfunc="sum")
-                .fillna(0)
-                .round(1)
-            )
-            piv_pl = piv_pl.reset_index().rename(columns={"plan_grp": "Sold plan"})
-            st.dataframe(
-                piv_pl,
-                use_container_width=True,
-                hide_index=True,
-                height=dataframe_display_height(min(len(piv_pl), 40)),
-            )
-            table_export_row(piv_pl, "sale_mix_plan_by_period.csv", key_suffix="sale_mix_piv_pl")
-
-            st.divider()
-            st.subheader("Period-over-period comparison")
-            st.caption(
-                "Choose **Partners** or **Plans** for one comparison table. "
-                "Pickers span the **full** `call_date` range in the extract (sidebar **date** filter does not apply); "
-                "shares still use converting calls with other sidebar filters only. "
-                "Defaults: **Post** = latest full Mon–Sun week vs raw max; **Pre** = four Mon–Sun weeks before that. "
-                "**% change vs pre** is relative to the pre-period share."
-            )
-
+            st.markdown("**Compare periods**")
             sm_sales_cmp = (
                 df_nodatefilter[df_nodatefilter["order_count"].fillna(0) > 0]
                 .dropna(subset=["call_date"])
@@ -2376,32 +2258,20 @@ with tab_sale_mix:
             )
             sm_sales_cmp["partner"] = _sm_display_str(sm_sales_cmp["sold_partner_name"])
             sm_sales_cmp["plan"] = _sm_display_str(sm_sales_cmp["sold_plan_name"])
-            sm_sales_cmp["partner_grp"] = _sm_bucket_selected_other(
-                sm_sales_cmp["partner"], _sel_p, include_other=include_other_partners
+            sm_sales_cmp[group_col] = _sm_bucket_selected_other(
+                sm_sales_cmp[dim_key], selected_categories, include_other=include_other
             )
-            sm_sales_cmp["plan_grp"] = _sm_bucket_selected_other(
-                sm_sales_cmp["plan"], _sel_pl, include_other=include_other_plans
-            )
+            sm_sales_cmp = sm_sales_cmp if include_other else sm_sales_cmp.dropna(subset=[group_col])
 
             sm_data_min = pd.to_datetime(df_raw["call_date"].min()).date()
             sm_data_max = pd.to_datetime(df_raw["call_date"].max()).date()
-            _sm_cmp_sig = (sm_data_min, sm_data_max, len(sm_sales_cmp))
+            _sm_cmp_sig = (sm_data_min, sm_data_max, len(sm_sales_cmp), sale_mix_dimension, sale_mix_metric)
             if st.session_state.get("sale_mix_cmp_date_sig") != _sm_cmp_sig:
                 st.session_state.pop("sale_mix_cmp_pre_range", None)
                 st.session_state.pop("sale_mix_cmp_post_range", None)
                 st.session_state["sale_mix_cmp_date_sig"] = _sm_cmp_sig
 
-            _sm_pre_default, _sm_post_default = streamlit_safe_period_defaults(
-                sm_data_max, sm_data_min
-            )
-
-            sale_cmp_dim = st.radio(
-                "Compare",
-                ["Partners", "Plans"],
-                horizontal=True,
-                key="sale_mix_cmp_dim",
-            )
-
+            _sm_pre_default, _sm_post_default = streamlit_safe_period_defaults(sm_data_max, sm_data_min)
             sm_po1, sm_po2 = st.columns(2)
             with sm_po1:
                 sm_pre_range = st.date_input(
@@ -2410,6 +2280,7 @@ with tab_sale_mix:
                     min_value=sm_data_min,
                     max_value=sm_data_max,
                     key="sale_mix_cmp_pre_range",
+                    help="Baseline comparison window.",
                 )
             with sm_po2:
                 sm_post_range = st.date_input(
@@ -2418,6 +2289,7 @@ with tab_sale_mix:
                     min_value=sm_data_min,
                     max_value=sm_data_max,
                     key="sale_mix_cmp_post_range",
+                    help="Current or test comparison window.",
                 )
 
             def _sm_slice_sm_sales(d0: date, d1: date):
@@ -2425,14 +2297,9 @@ with tab_sale_mix:
                 m = (sm_sales_cmp["call_date"].dt.date >= lo) & (sm_sales_cmp["call_date"].dt.date <= hi)
                 return sm_sales_cmp.loc[m]
 
-            def _sm_share_mix(sub: pd.DataFrame, grp_col: str) -> pd.Series:
-                if len(sub) == 0:
-                    return pd.Series(dtype=float)
-                return sub[grp_col].value_counts(normalize=True).mul(100).sort_values(ascending=False)
-
             def _sm_color_pct_chg(val):
                 try:
-                    x = float(val)
+                    x = float(str(val).replace("%", "").replace("+", ""))
                 except (TypeError, ValueError):
                     return ""
                 if pd.isna(x):
@@ -2447,28 +2314,13 @@ with tab_sale_mix:
                 pre_lab = f"{pre_lo.strftime('%-m/%-d')}-{pre_hi.strftime('%-m/%-d')}"
                 post_lab = f"{post_lo.strftime('%-m/%-d')}-{post_hi.strftime('%-m/%-d')}"
 
-                if sale_cmp_dim == "Partners":
-                    pre_ss = pre_s.dropna(subset=["partner_grp"]) if not include_other_partners else pre_s
-                    post_ss = post_s.dropna(subset=["partner_grp"]) if not include_other_partners else post_s
-                    grp_col = "partner_grp"
-                    axis_lbl = "Partner"
-                    export_fn = "sale_mix_partner_period_compare.csv"
-                    export_key = "sale_mix_popp"
-                else:
-                    pre_ss = pre_s.dropna(subset=["plan_grp"]) if not include_other_plans else pre_s
-                    post_ss = post_s.dropna(subset=["plan_grp"]) if not include_other_plans else post_s
-                    grp_col = "plan_grp"
-                    axis_lbl = "Sold plan"
-                    export_fn = "sale_mix_plan_period_compare.csv"
-                    export_key = "sale_mix_popl"
-
-                sh_pre = _sm_share_mix(pre_ss, grp_col)
-                sh_post = _sm_share_mix(post_ss, grp_col)
-                idx_x = sh_pre.index.union(sh_post.index)
+                pre_vals = _sm_metric_by_group(pre_s, group_col, sale_mix_metric)
+                post_vals = _sm_metric_by_group(post_s, group_col, sale_mix_metric)
+                idx_x = pre_vals.index.union(post_vals.index)
                 t_cmp = pd.DataFrame(
                     {
-                        f"Share % ({pre_lab})": sh_pre.reindex(idx_x).fillna(0).round(1),
-                        f"Share % ({post_lab})": sh_post.reindex(idx_x).fillna(0).round(1),
+                        f"{sale_mix_metric} ({pre_lab})": pre_vals.reindex(idx_x).fillna(0).round(1),
+                        f"{sale_mix_metric} ({post_lab})": post_vals.reindex(idx_x).fillna(0).round(1),
                     }
                 )
                 _cp0, _cp1 = t_cmp.columns[0], t_cmp.columns[1]
@@ -2477,31 +2329,33 @@ with tab_sale_mix:
                 t_cmp["% change vs pre"] = ((_pv1 / _pv0.replace(0, float("nan")) - 1.0).mul(100).round(1))
                 t_cmp = t_cmp.sort_values(_cp1, ascending=False).rename_axis(axis_lbl).reset_index()
 
-                sty_cmp = t_cmp.style.map(_sm_color_pct_chg, subset=["% change vs pre"])
+                t_disp = t_cmp.copy()
+                t_disp[_cp0] = t_disp[_cp0].apply(lambda v: format_chart_value(v, sale_mix_metric))
+                t_disp[_cp1] = t_disp[_cp1].apply(lambda v: format_chart_value(v, sale_mix_metric))
+                sty_cmp = t_disp.style.map(_sm_color_pct_chg, subset=["% change vs pre"])
                 sty_cmp = sty_cmp.set_properties(**{"text-align": "right"}, subset=[_cp0, _cp1, "% change vs pre"])
                 sty_cmp = sty_cmp.set_properties(**{"text-align": "left"}, subset=[axis_lbl])
                 st.dataframe(
                     sty_cmp,
                     use_container_width=True,
                     hide_index=True,
-                    height=dataframe_display_height(min(len(t_cmp), 40)),
+                    height=dataframe_display_height(min(len(t_disp), 40)),
                 )
-                table_export_row(t_cmp, export_fn, key_suffix=export_key)
+                table_export_row(t_disp, f"sale_mix_{dim_key}_period_compare.csv", key_suffix=f"sale_mix_{dim_key}_cmp")
             else:
                 st.caption("Select full pre and post date ranges to populate the comparison table.")
-
 
 
 # ════════════════════════════════════════════════════════════════════════════════
 # TAB 4 — AGENT LEVEL
 # ════════════════════════════════════════════════════════════════════════════════
 with tab_agent_level:
-    st.subheader("Agent-Level Performance")
-    st.caption(
-        "One row per agent. First-pitch tier rates show share of that agent's calls "
-        "where each tier was pitched first. Conversion and GCV metrics are per-call "
-        "and per-first-pitch. GCV / 1st Pitch is an expected value (all calls, not just converting). "
-        "All sidebar filters apply."
+    st.subheader(
+        "Agent-Level Performance",
+        help=(
+            "One row per agent. Tier rates show share of calls by first-pitched tier. Conversion and GCV metrics "
+            "are per-call; GCV / 1st Pitch is an expected value over all calls. Sidebar filters apply."
+        ),
     )
 
     agent_needed = {
@@ -2513,16 +2367,28 @@ with tab_agent_level:
 
         al_c1, al_c2, al_c3 = st.columns([2, 2, 1])
         with al_c1:
-            agent_search = st.text_input("Search Agent Name", key="agent_search", placeholder="Type to filter…")
+            agent_search = st.text_input(
+                "Search Agent Name",
+                key="agent_search",
+                placeholder="Type to filter…",
+                help="Filter the agent table and charts by name.",
+            )
         with al_c2:
             sort_col = st.selectbox(
                 "Sort by",
                 ["Calls", "Diamond %", "Gold %", "Silver %", "Bronze %",
                  "1st Pitch CR", "Overall CR", "GCV / Call", "GCV / 1st Pitch", "Points / Call"],
                 key="agent_sort_col",
+                help="Metric used to order the agent table.",
             )
         with al_c3:
-            sort_asc = st.radio("Order", ["Desc", "Asc"], horizontal=True, key="agent_sort_order") == "Asc"
+            sort_asc = st.radio(
+                "Order",
+                ["Desc", "Asc"],
+                horizontal=True,
+                key="agent_sort_order",
+                help="Sort direction for the selected metric.",
+            ) == "Asc"
 
         ag = df.copy()
         if agent_search:
@@ -2540,8 +2406,12 @@ with tab_agent_level:
             # FIX: GCV / 1st Pitch EV = mean over ALL calls (zeros included)
             gcv_fp   = g["gcv_on_first_pitch"].mean()
             pts_call = g["points"].mean() if "points" in g.columns else float("nan")
+            center = g["center_location"].mode().iloc[0] if "center_location" in g.columns and not g["center_location"].mode().empty else "—"
+            quartile = g["performance_quartile"].mode().iloc[0] if "performance_quartile" in g.columns and not g["performance_quartile"].mode().empty else "—"
 
             return pd.Series({
+                "Center":              center,
+                "Agent Quartile":      quartile,
                 "Calls":               n,
                 "Diamond %":           fp_pct("Diamond"),
                 "Gold %":              fp_pct("Gold"),
@@ -2570,37 +2440,61 @@ with tab_agent_level:
         sc3.metric("Avg 1st Pitch CR", f"{agent_df['1st Pitch CR'].mean():.1f}%")
         sc4.metric("Avg GCV / Call", f"${agent_df['GCV / Call'].mean():,.0f}")
 
-        dht1, dht2 = st.columns(2)
-        dht1.markdown("**Diamond % Distribution**")
-        dht2.markdown("**GCV / Call Distribution**")
-
-        dc1, dc2 = st.columns(2)
-
-        with dc1:
-            fig_d = go.Figure(go.Histogram(
-                x=agent_df["Diamond %"], nbinsx=20,
-                marker_color=PLOT_COLORWAY[0], opacity=0.8,
-                marker_line_color=histogram_marker_line(), marker_line_width=1,
-            ))
-            apply_chart_theme(fig_d,
-                **PAIR_CHART_LAYOUT,
-                xaxis_title="Diamond First-Pitch Rate (%)",
-                yaxis_title="Agents",
+        dist_c1, dist_c2 = st.columns(2)
+        with dist_c1:
+            dist_metric = st.selectbox(
+                "Distribution metric",
+                ["Diamond %", "Gold %", "Silver %", "Bronze %",
+                 "1st Pitch CR", "Overall CR", "GCV / Call", "GCV / 1st Pitch", "Points / Call"],
+                key="agent_distribution_metric",
+                index=0,
+                help="Metric to visualize across agents.",
             )
-            st.plotly_chart(fig_d, use_container_width=True)
-
-        with dc2:
-            fig_g = go.Figure(go.Histogram(
-                x=agent_df["GCV / Call"].dropna(), nbinsx=20,
-                marker_color=PLOT_COLORWAY[1], opacity=0.8,
-                marker_line_color=histogram_marker_line(), marker_line_width=1,
-            ))
-            apply_chart_theme(fig_g,
-                **PAIR_CHART_LAYOUT,
-                xaxis_title="GCV / Call ($)",
-                yaxis_title="Agents",
+        with dist_c2:
+            dist_group = st.selectbox(
+                "Group By",
+                ["None", "Center", "Agent Quartile"],
+                key="agent_distribution_group",
+                help="Use grouping to compare distributions across centers or quartiles.",
             )
-            st.plotly_chart(fig_g, use_container_width=True)
+
+        fig_dist = go.Figure()
+        _dist_stroke = histogram_marker_line()
+        if dist_group == "None":
+            fig_dist.add_trace(go.Histogram(
+                x=agent_df[dist_metric].dropna(),
+                nbinsx=20,
+                marker_color=PLOT_COLORWAY[0],
+                opacity=0.85,
+                marker_line_color=_dist_stroke,
+                marker_line_width=1,
+            ))
+            x_title = dist_metric
+            y_title = "Agents"
+            showlegend = False
+        else:
+            group_col = "Center" if dist_group == "Center" else "Agent Quartile"
+            for i, group_val in enumerate(sorted(agent_df[group_col].dropna().unique().tolist())):
+                sub = agent_df[agent_df[group_col] == group_val]
+                fig_dist.add_trace(go.Box(
+                    x=[str(group_val)] * len(sub),
+                    y=sub[dist_metric],
+                    name=str(group_val),
+                    marker_color=PLOT_COLORWAY[i % len(PLOT_COLORWAY)],
+                    boxmean=True,
+                ))
+            x_title = dist_group
+            y_title = dist_metric
+            showlegend = False
+        apply_chart_theme(
+            fig_dist,
+            **PAIR_CHART_LAYOUT,
+            xaxis_title=x_title,
+            yaxis_title=y_title,
+            showlegend=showlegend,
+            **metric_axis_kwargs(dist_metric),
+        )
+        st.plotly_chart(fig_dist, use_container_width=True)
 
         fmt_df = agent_df.copy()
         for col in ["Diamond %", "Gold %", "Silver %", "Bronze %", "1st Pitch CR", "Overall CR"]:
@@ -2640,6 +2534,8 @@ AI_ANALYST_TOOLS = [
             "description": (
                 "Execute Python against `df`. Assign final output to `result`. "
                 "Never call print(). pandas=pd, numpy=np, plotly=go/px available. "
+                "For visuals, return a Plotly Figure directly or under `result['figure']`; "
+                "do not save, link, or embed PNG/image files. "
                 "Date helpers for WTD/MTD/P4WA: analysis_as_of, analysis_wtd_start, analysis_mtd_start, "
                 "analysis_ytd_start, analysis_p4wa_start, analysis_p4wa_end (datetime.date; analysis_data_max may be None)."
             ),
@@ -2733,16 +2629,6 @@ def truncate_ai_agent_messages(messages: list[dict]) -> list[dict]:
     return [messages[first_user_i]] + messages[start_keep:]
 
 
-def build_ai_example_questions(_df_raw: pd.DataFrame) -> list[str]:
-    """Short example prompts for the AI Analyst empty state."""
-    return [
-        "Plot Durban's weekly adherence rate since 4/18.",
-        "What is the overall CR across each center?",
-        "Which agents have the highest 1st pitch CR?",
-        "Show GCV/Call by marketing bucket.",
-    ]
-
-
 # ════════════════════════════════════════════════════════════════════════════════
 # TAB 5 — AI ANALYST
 # ════════════════════════════════════════════════════════════════════════════════
@@ -2810,6 +2696,25 @@ with tab_chat:
     def _ai_export_slug(text: str, *, max_len: int = 40) -> str:
         return "".join(c if c.isalnum() else "_" for c in str(text))[:max_len]
 
+    def _result_has_plotly_figure(result) -> bool:
+        import plotly.graph_objects as _go
+
+        if isinstance(result, _go.Figure):
+            return True
+        if isinstance(result, dict):
+            return any(isinstance(v, _go.Figure) for v in result.values())
+        return False
+
+    def _step_has_plotly_figure(step: dict) -> bool:
+        if step.get("kind") != "result":
+            return False
+        return _result_has_plotly_figure(step.get("content", step.get("result")))
+
+    def _clean_ai_answer_markdown(text: str) -> str:
+        import re as _re
+
+        return _re.sub(r"!\[[^\]]*\]\([^)]*\)", "", str(text)).strip()
+
     def render_step_body(step: dict, *, export_key_suffix: str = "step"):
         kind = step.get("kind")
         if kind == "user":
@@ -2826,8 +2731,13 @@ with tab_chat:
             step_label = step.get("step_num", step.get("n"))
             st.markdown(f"**Result {step_label}**")
             if isinstance(r, dict):
-                if "figure" in r and isinstance(r["figure"], _go.Figure):
-                    st.plotly_chart(r["figure"], use_container_width=True)
+                figure_keys = set()
+                figure_items = [(k, v) for k, v in r.items() if isinstance(v, _go.Figure)]
+                for k, fig in figure_items:
+                    figure_keys.add(k)
+                    if k != "figure" or len(figure_items) > 1:
+                        st.markdown(f"**{k}**")
+                    st.plotly_chart(fig, use_container_width=True)
                 if "summary" in r:
                     if isinstance(r["summary"], pd.DataFrame):
                         sdf = r["summary"]
@@ -2857,7 +2767,7 @@ with tab_chat:
                         )
                     else:
                         st.write(r["summary"])
-                remaining = {k: v for k, v in r.items() if k not in ("figure", "summary")}
+                remaining = {k: v for k, v in r.items() if k not in figure_keys and k != "summary"}
                 for k, v in remaining.items():
                     if isinstance(v, pd.DataFrame):
                         st.markdown(f"**{k}**")
@@ -2923,7 +2833,7 @@ with tab_chat:
             st.markdown(f"**Error on step {step.get('n')} - retrying...**")
             st.code(step.get("error", ""), language="text")
         elif kind == "answer":
-            st.markdown(step.get("content", ""))
+            st.markdown(_clean_ai_answer_markdown(step.get("content", "")))
 
     def render_step(step: dict, *, export_key_suffix: str = "step"):
         kind = step.get("kind")
@@ -2962,6 +2872,23 @@ with tab_chat:
                 intermediate_steps.append((steps[i], i))
                 i += 1
 
+            final_visual_result = None
+            if final_answer is not None:
+                final_result_positions = [
+                    j
+                    for j, (intermediate, _) in enumerate(intermediate_steps)
+                    if intermediate.get("kind") == "result"
+                ]
+                for j in reversed(final_result_positions):
+                    intermediate = intermediate_steps[j][0]
+                    if intermediate.get("is_final") and _step_has_plotly_figure(intermediate):
+                        final_visual_result = intermediate_steps.pop(j)
+                        break
+                if final_visual_result is None and final_result_positions:
+                    j = final_result_positions[-1]
+                    if _step_has_plotly_figure(intermediate_steps[j][0]):
+                        final_visual_result = intermediate_steps.pop(j)
+
             if intermediate_steps:
                 with st.expander(f"Analysis steps ({len(intermediate_steps)})", expanded=False):
                     for j, (intermediate, step_i) in enumerate(intermediate_steps):
@@ -2971,6 +2898,10 @@ with tab_chat:
 
             if final_answer is not None:
                 render_step(final_answer, export_key_suffix=f"fin_{steps.index(final_answer)}")
+
+            if final_visual_result is not None:
+                visual_step, visual_step_i = final_visual_result
+                render_step_body(visual_step, export_key_suffix=f"visual_{visual_step_i}")
 
             if step.get("kind") != "user" and final_answer is None and not intermediate_steps:
                 render_step(step, export_key_suffix=f"orphan_{steps.index(step)}")
@@ -2992,105 +2923,135 @@ with tab_chat:
     st.markdown(
         """
         <style>
+        .st-key-ai_chat_shell {
+            max-width: 920px;
+            margin: 0 auto;
+            min-height: 58vh;
+            padding: 0.5rem 0 1.5rem;
+        }
         .ai-empty-state {
-            min-height: 42vh;
+            min-height: 54vh;
             display: flex;
             flex-direction: column;
+            align-items: center;
             justify-content: center;
             text-align: center;
+            max-width: 720px;
+            margin: 0 auto;
+            padding: 2rem 1rem;
         }
         .ai-empty-state h1 {
-            opacity: 0.45;
-            font-size: 3.25rem;
-            font-weight: 600;
-            margin-bottom: 2rem;
+            color: var(--text-primary) !important;
+            font-size: clamp(2.25rem, 4vw, 3.4rem);
+            font-weight: 700;
+            margin: 0 0 0.75rem;
+            letter-spacing: 0 !important;
         }
-        div[data-testid="stButton"] button,
-        div[data-testid="stButton"] button[kind],
-        div[data-testid="stButton"] button[data-testid*="baseButton"] {
-            border-radius: 999px !important;
-            padding: 0.55rem 1rem !important;
-            white-space: normal !important;
-            background-color: rgb(39, 39, 42) !important;
-            background: rgb(39, 39, 42) !important;
-            border: 1px solid rgb(113, 113, 122) !important;
-            box-shadow: none !important;
-            color: rgb(212, 212, 216) !important;
-            transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease !important;
-        }
-        div[data-testid="stButton"] button p,
-        div[data-testid="stButton"] button span {
-            color: rgb(212, 212, 216) !important;
-        }
-        div[data-testid="stButton"] button:hover:enabled,
-        div[data-testid="stButton"] button[kind]:hover:enabled,
-        div[data-testid="stButton"] button[data-testid*="baseButton"]:hover:enabled {
-            background-color: rgb(63, 63, 70) !important;
-            background: rgb(63, 63, 70) !important;
-            border-color: rgb(161, 161, 170) !important;
-            color: rgb(244, 244, 245) !important;
-        }
-        div[data-testid="stButton"] button:hover:enabled p,
-        div[data-testid="stButton"] button:hover:enabled span {
-            color: rgb(244, 244, 245) !important;
-        }
-        div[data-testid="stButton"] button:disabled,
-        div[data-testid="stButton"] button[kind]:disabled,
-        div[data-testid="stButton"] button[data-testid*="baseButton"]:disabled {
-            background-color: rgba(39, 39, 42, 0.58) !important;
-            background: rgba(39, 39, 42, 0.58) !important;
-            border-color: rgba(113, 113, 122, 0.45) !important;
-            color: rgba(212, 212, 216, 0.55) !important;
-        }
-        div[data-testid="stButton"] button:disabled p,
-        div[data-testid="stButton"] button:disabled span {
-            color: rgba(212, 212, 216, 0.55) !important;
+        .ai-empty-state p {
+            max-width: 560px;
+            margin: 0;
+            color: var(--text-secondary) !important;
+            font-size: 0.98rem;
+            line-height: 1.6;
+            font-weight: 400 !important;
+            letter-spacing: 0 !important;
         }
         .ai-user-row {
             width: 100%;
             display: flex;
             justify-content: flex-end;
-            margin: 0.75rem 0 1rem;
+            margin: 0.75rem 0 1.25rem;
         }
         .ai-user-bubble {
-            max-width: 75%;
-            border-radius: 1rem;
+            max-width: min(74%, 720px);
+            border-radius: 1.15rem;
             padding: 0.8rem 1rem;
-            background: rgba(49, 130, 206, 0.14);
-            border: 1px solid rgba(49, 130, 206, 0.22);
-            line-height: 1.45;
+            background: color-mix(in srgb, var(--accent) 14%, transparent);
+            border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent);
+            line-height: 1.5;
             overflow-wrap: anywhere;
+        }
+        .st-key-ai_chat_shell [data-testid="stMarkdownContainer"] p,
+        .st-key-ai_chat_shell [data-testid="stMarkdownContainer"] li {
+            line-height: 1.65;
+        }
+        .st-key-ai_chat_shell [data-testid="stExpander"] {
+            border-color: var(--border) !important;
+            background: transparent !important;
+        }
+        .st-key-ai_analyst_clear {
+            max-width: 920px;
+            margin: 0.25rem auto 0;
+            display: flex;
+            justify-content: flex-end;
+        }
+        .st-key-ai_analyst_clear button {
+            min-height: auto !important;
+            border-radius: 999px !important;
+            padding: 0.4rem 0.8rem !important;
+            background: transparent !important;
+            border: 1px solid var(--border) !important;
+            color: var(--text-muted) !important;
+            box-shadow: none !important;
+            font-size: 0.78rem !important;
+            font-weight: 500 !important;
+            letter-spacing: 0 !important;
+            text-transform: none !important;
+        }
+        .st-key-ai_analyst_clear button:hover:enabled {
+            background: var(--bg-hover) !important;
+            border-color: var(--border-bright) !important;
+            color: var(--text-secondary) !important;
+            transform: none !important;
+            box-shadow: none !important;
+        }
+        div[data-testid="stChatInput"] {
+            max-width: 920px;
+            margin: 0.75rem auto 0;
+        }
+        .ai-analyst-footer-note {
+            max-width: 760px;
+            margin: 0.7rem auto 0;
+            padding: 0 1rem 0.9rem;
+            color: var(--text-muted) !important;
+            font-size: 0.78rem;
+            line-height: 1.35;
+            text-align: center;
+            opacity: 0.72;
+        }
+        @media (max-width: 760px) {
+            .st-key-ai_chat_shell {
+                min-height: 52vh;
+            }
+            .ai-analyst-footer-note {
+                font-size: 0.72rem;
+            }
         }
         </style>
         """,
         unsafe_allow_html=True,
     )
 
-    def queue_example(question: str):
-        st.session_state.ai_analyst_pending_example = question
-
     has_chat = len(st.session_state.agent_steps) > 0
-    pending_example = st.session_state.ai_analyst_pending_example
     pending_user_input = st.session_state.ai_analyst_pending_user_input
-    pending_request = pending_example or pending_user_input
+    pending_request = pending_user_input
 
-    if not has_chat and not pending_request:
-        st.markdown('<div class="ai-empty-state"><h1>Ask a question</h1></div>', unsafe_allow_html=True)
-        example_questions = build_ai_example_questions(df_raw)
-        ex_cols = st.columns(2)
-        for i, question in enumerate(example_questions):
-            ex_cols[i % 2].button(
-                question,
-                key=f"ai_example_{i}",
-                use_container_width=True,
-                on_click=queue_example,
-                args=(question,),
+    with st.container(key="ai_chat_shell"):
+        if not has_chat and not pending_request:
+            st.markdown(
+                """
+                <div class="ai-empty-state">
+                    <h1>AI Analyst</h1>
+                    <p>Ask about model outputs, agent behavior, sales quality, or any field in the sidebar schema.</p>
+                </div>
+                """,
+                unsafe_allow_html=True,
             )
 
-    render_agent_transcript(st.session_state.agent_steps)
+        render_agent_transcript(st.session_state.agent_steps)
 
-    if st.session_state.ai_analyst_limit_warning:
-        st.warning("The AI Analyst reached the maximum number of tool steps. Ask a narrower follow-up or clear the chat and try again.")
+        if st.session_state.ai_analyst_limit_warning:
+            st.warning("The AI Analyst reached the maximum number of tool steps. Ask a narrower follow-up or clear the chat and try again.")
 
     if pending_request:
         user_input = pending_request
@@ -3254,7 +3215,12 @@ with tab_chat:
                             )
                         else:
                             code_error_by_hash.pop(h, None)
-                            result_step = {"kind": "result", "step_num": step_num, "content": result}
+                            result_step = {
+                                "kind": "result",
+                                "step_num": step_num,
+                                "content": result,
+                                "is_final": is_final,
+                            }
                             st.session_state.agent_steps.append(result_step)
                             step_count = sum(
                                 1
@@ -3271,6 +3237,8 @@ with tab_chat:
                                     "\nEvery specific value you mention must appear verbatim in this result."
                                     "\nIf this result is a chart, do not list specific data points in prose unless "
                                     "your code explicitly extracted those values into the result dict."
+                                    "\nDo not include Markdown image links or PNG placeholders; the app renders "
+                                    "Plotly figures directly from the result object."
                                     "\nIf you notice any inconsistency between this result and what you expected, "
                                     "call execute_python again rather than papering over it in prose."
                                 )
@@ -3305,15 +3273,25 @@ with tab_chat:
             st.session_state.ai_analyst_limit_warning = True
         st.rerun()
 
+    if has_chat:
+        if st.button("Clear chat", key="ai_analyst_clear"):
+            st.session_state.agent_steps = []
+            st.session_state.agent_messages = []
+            st.session_state.ai_analyst_pending_example = None
+            st.session_state.ai_analyst_pending_user_input = None
+            st.session_state.ai_analyst_limit_warning = False
+            st.rerun()
+
     typed_user_input = st.chat_input("What do you want to know?", key="ai_analyst_input")
     if typed_user_input:
         st.session_state.ai_analyst_pending_user_input = typed_user_input
         st.rerun()
 
-    if st.button("Clear", key="ai_analyst_clear", disabled=not has_chat):
-        st.session_state.agent_steps = []
-        st.session_state.agent_messages = []
-        st.session_state.ai_analyst_pending_example = None
-        st.session_state.ai_analyst_pending_user_input = None
-        st.session_state.ai_analyst_limit_warning = False
-        st.rerun()
+    st.markdown(
+        """
+        <div class="ai-analyst-footer-note">
+            Tip: Use field names from the sidebar schema when possible, and describe the analysis you want in detail to reduce misinterpretation.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
