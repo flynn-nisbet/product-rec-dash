@@ -4,6 +4,8 @@ import pandas as pd
 import os
 import glob
 import hashlib
+import inspect
+import numbers
 import plotly.graph_objects as go
 from datetime import date, timedelta
 from openai import OpenAI as _OpenAI
@@ -79,6 +81,35 @@ PERIOD_OPTIONS = ["Daily", "Weekly", "Monthly"]
 SALE_TIER_ORDER = ["Diamond", "Gold", "Silver", "Bronze"]
 PERIOD_CODE = {"Daily": "D", "Weekly": "W", "Monthly": "M"}
 PERIOD_FMT = {"Daily": "%b %d", "Weekly": "%b %d", "Monthly": "%b %Y"}
+TAB_OPTIONS = [
+    "Model Outputs",
+    "Agent Behavior & Performance",
+    "Sale Mixes",
+    "Agent Level",
+    "AI Analyst",
+    "Dataset Schema",
+]
+ACTIVE_TAB_KEY = "product_rec_active_tab"
+
+
+def streamlit_func_supports_param(func, param: str) -> bool:
+    try:
+        params = inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return False
+    return param in params
+
+
+def streamlit_tabs_supports_active_state() -> bool:
+    return streamlit_func_supports_param(st.tabs, "key") and streamlit_func_supports_param(st.tabs, "on_change")
+
+
+def streamlit_container_supports_key() -> bool:
+    return streamlit_func_supports_param(st.container, "key")
+
+
+TABS_SUPPORTS_ACTIVE_STATE = streamlit_tabs_supports_active_state()
+CONTAINER_SUPPORTS_KEY = streamlit_container_supports_key()
 
 
 def period_start_dates(date_series: pd.Series, period: str) -> pd.Series:
@@ -159,21 +190,20 @@ with st.sidebar:
     )
     happy_only = happy_path_tf == "True"
 
-    with st.expander("Advanced filters", expanded=False):
-        sel_brand_nonbrand = st.multiselect(
-            "Brand/Non-Brand",
-            options=["Brand", "Non-Brand"],
-            default=[],
-            key="filter_brand_nonbrand",
-            help="Shortcut: Brand = Brand-Partner, Competitor, and NRG; Non-Brand = all other buckets. "
-            "Leave empty for no filter. Refines together with Marketing Bucket when that is also set. "
-            "Selecting both is equivalent to no filter.",
-        )
-        sel_mkt      = st.multiselect("Marketing Bucket", options=mkt_opts,      default=[], key="filter_mkt")
-        sel_serp     = st.multiselect("Site / SERP",      options=serp_opts,     default=[], key="filter_serp")
-        sel_mov      = st.multiselect("Mover / Switcher", options=mov_opts,      default=[], key="filter_mov")
-        sel_quartile = st.multiselect("Agent Quartile",   options=quartile_opts, default=[], key="filter_quartile")
-        sel_rec_type = st.multiselect("Rec Product Type", options=rec_type_opts, default=[], key="filter_rec_type")
+    sel_brand_nonbrand = st.multiselect(
+        "Brand/Non-Brand",
+        options=["Brand", "Non-Brand"],
+        default=[],
+        key="filter_brand_nonbrand",
+        help="Shortcut: Brand = Brand-Partner, Competitor, and NRG; Non-Brand = all other buckets. "
+        "Leave empty for no filter. Refines together with Marketing Bucket when that is also set. "
+        "Selecting both is equivalent to no filter.",
+    )
+    sel_mkt      = st.multiselect("Marketing Bucket", options=mkt_opts,      default=[], key="filter_mkt")
+    sel_serp     = st.multiselect("Site / SERP",      options=serp_opts,     default=[], key="filter_serp")
+    sel_mov      = st.multiselect("Mover / Switcher", options=mov_opts,      default=[], key="filter_mov")
+    sel_quartile = st.multiselect("Agent Quartile",   options=quartile_opts, default=[], key="filter_quartile")
+    sel_rec_type = st.multiselect("Rec Product Type", options=rec_type_opts, default=[], key="filter_rec_type")
 
     st.divider()
 
@@ -394,9 +424,9 @@ def build_schema_context(d: pd.DataFrame) -> str:
         ),
         "",
         "═══ DATA SCOPE ═══",
-        f"df (raw, default):     {d.shape[0]:,} rows × {d.shape[1]} columns",
-        f"df_nodatefilter:       {df_nodatefilter.shape[0]:,} rows (sidebar filters, no date window)",
+        f"df / df_raw:           {d.shape[0]:,} rows × {d.shape[1]} columns (completely unfiltered; default AI Analyst dataframe)",
         f"df_filtered:           {df.shape[0]:,} rows (sidebar + date filters)",
+        f"df_nodatefilter:       {df_nodatefilter.shape[0]:,} rows (sidebar filters, no date window)",
     ]
 
     if "call_date" in d.columns and d["call_date"].notna().any():
@@ -424,10 +454,9 @@ def build_schema_context(d: pd.DataFrame) -> str:
 
 
 # ── Sidebar: Settings (after filtered frames exist for schema text) ─────────────
+_schema_display = build_schema_context(df_raw)
 with st.sidebar:
     _product_rec_theme_choice = theme.render_app_theme_toggle()
-    with st.expander("AI Analyst Dataset Schema", expanded=False):
-        st.code(build_schema_context(df_raw), language="text")
 
 theme.inject_app_styles(light=_product_rec_theme_choice == "Light")
 _chart_granularity = st.session_state.get("global_granularity", "Daily")
@@ -511,6 +540,41 @@ def dataframe_display_height(n_rows: int, min_rows: int = 4, row_px: int = 36, h
     return int(min(cap, header_px + row_px * n))
 
 
+def format_table_value(value):
+    """Compact numeric display for dashboard tables without long trailing decimals."""
+    if pd.isna(value):
+        return "—"
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, numbers.Integral):
+        return f"{value:,}"
+    if isinstance(value, numbers.Real):
+        rounded = round(float(value), 10)
+        if pd.isna(rounded):
+            return "—"
+        if rounded.is_integer():
+            return f"{int(rounded):,}"
+        return f"{rounded:,.10f}".rstrip("0").rstrip(".")
+    return value
+
+
+def format_table_for_display(display_df: pd.DataFrame) -> pd.DataFrame:
+    """Return a display-only copy with numeric columns compactly formatted."""
+    out = display_df.copy()
+    numeric_cols = out.select_dtypes(include=["number"]).columns
+    for col in numeric_cols:
+        out[col] = out[col].map(format_table_value)
+    return out
+
+
+def format_styler_numbers(styler, display_df: pd.DataFrame):
+    """Apply the same compact numeric display to pandas Styler-backed tables."""
+    numeric_cols = display_df.select_dtypes(include=["number"]).columns.tolist()
+    if not numeric_cols:
+        return styler
+    return styler.format({col: format_table_value for col in numeric_cols}, na_rep="—")
+
+
 def table_export_row(
     display_df: pd.DataFrame,
     download_filename: str,
@@ -519,7 +583,8 @@ def table_export_row(
     key_suffix: str = "",
 ) -> None:
     """Renders a compact copy action below a table."""
-    tsv = display_df.to_csv(index=False, sep="\t")
+    export_df = format_table_for_display(display_df)
+    tsv = export_df.to_csv(index=False, sep="\t")
     uid = hashlib.md5((download_filename + "\0" + key_suffix).encode(), usedforsecurity=False).hexdigest()[:12]
     copy_bg = "#f8fafc" if theme.is_light_theme() else "#181c25"
     copy_text = "#475569" if theme.is_light_theme() else "#8b95aa"
@@ -581,13 +646,14 @@ def render_table_expander(
 ) -> None:
     """Keep supporting data available without making it compete with the chart."""
     with st.expander(label, expanded=False):
+        formatted_df = format_table_for_display(display_df)
         st.dataframe(
-            display_df,
+            formatted_df,
             use_container_width=True,
             hide_index=True,
-            height=dataframe_display_height(height_rows if height_rows is not None else len(display_df)),
+            height=dataframe_display_height(height_rows if height_rows is not None else len(formatted_df)),
         )
-        table_export_row(display_df, export_filename, key_suffix=key_suffix)
+        table_export_row(formatted_df, export_filename, key_suffix=key_suffix)
 
 
 def mix_share_pct(slice_df: pd.DataFrame, plan_type: str) -> float:
@@ -631,7 +697,7 @@ def calc_performance_metric(source: pd.DataFrame, metric: str) -> float:
 def metric_axis_kwargs(metric: str) -> dict:
     if metric.endswith("%") or metric in ("1st Pitch CR", "Overall CR", "Share of Calls", "Share of Sales", "Tier Mix"):
         return {"yaxis_ticksuffix": "%"}
-    if metric in ("GCV / 1st Pitch", "GCV / Call", "RPO", "GCV / Sale"):
+    if metric in ("GCV / 1st Pitch", "GCV / Call", "RPO"):
         return {"yaxis_tickprefix": "$"}
     return {}
 
@@ -644,9 +710,282 @@ def format_chart_value(value, metric: str) -> str:
         return "—"
     if metric.endswith("%") or metric in ("1st Pitch CR", "Overall CR", "Share of Calls", "Share of Sales", "Tier Mix"):
         return f"{float(value):.1f}%"
-    if metric in ("GCV / 1st Pitch", "GCV / Call", "RPO", "GCV / Sale"):
+    if metric in ("GCV / 1st Pitch", "GCV / Call", "RPO"):
         return f"${float(value):,.0f}"
     return f"{float(value):,.0f}"
+
+
+DATASET_COLUMN_DEFINITIONS = {
+    "call_id": "Unique call identifier. Final dataframe is call-level.",
+    "center_location": "Call center location from v_agent_calls; pipeline target centers are Durban, Jamaica, and Charlotte.",
+    "agent_name": "Sales agent display name from rpt_agent_calls.",
+    "agent_tier": "Agent tier from rpt_agent_calls / workforce metadata.",
+    "performance_quartile": "Agent quartile computed in rec_query.py Step 13 using avg_points_on_first_pitch; 1 is highest.",
+    "avg_points_on_first_pitch": "Agent-level average of points_on_first_pitch used to rank performance quartiles.",
+    "call_date": "Call date from pitch extraction / Arcadia call rows.",
+    "order_count": "Number of orders on the call from rpt_agent_calls. order_count > 0 means the call converted.",
+    "order_rate": "Binary conversion flag from rec_query.py: 1.0 when order_count > 0 else 0.0.",
+    "points": "Total order points submitted on the call, summed from event_integration_orderpointssubmitted; 0 on non-sales.",
+    "points_on_first_pitch": "points when the call converted and the pipeline identifies the sold pitch as the first pitch; otherwise 0.",
+    "gcv": "Total gross contract value on the call, summed from v_orders.gcv_v2; 0 on non-sales.",
+    "gcv_on_first_pitch": "gcv when the call converted and the pipeline identifies the sold pitch as the first pitch; otherwise 0.",
+    "objection_reason": "Most recent Arcadia objection reason attached to the call.",
+    "site_serp": "Site when web_session_id is present; SERP when web_session_id is null.",
+    "marketing_bucket": "Normalized IVR/search-intent bucket derived from ivr_split_name in rec_query.py Step 9.",
+    "mover_switcher": "Mover/switcher customer segment from v_calls.",
+    "talk_time_minutes": "Call duration in minutes from v_calls.",
+    "pitches_in_order": "Raw extracted pitch names in original pitch order, before unresolved pitch names are removed.",
+    "pitches_plan_category_in_order": "Raw plan categories for pitches_in_order.",
+    "first_pitch": "First raw extracted pitch name in pitches_in_order.",
+    "first_pitch_plan_category": "Plan type/category for the first resolved pitch after product-name matching and category corrections.",
+    "pitches_matched_in_order": "Resolved canonical pitch plan names after LLM/cache matching; unresolved pitches are dropped and remaining pitches are re-indexed.",
+    "pitches_match_confidence": "Match confidence for each resolved pitch in pitches_matched_in_order.",
+    "pitches_plan_points_in_order": "Plan point values for each resolved pitch, matched by canonical/noterm key.",
+    "first_pitch_matched": "First resolved canonical pitch plan name after unresolved pitches are dropped.",
+    "first_pitch_match_confidence": "LLM/cache match confidence for first_pitch_matched.",
+    "recommended_matched_in_order": "Canonical model recommendation products in ranked order. Slot 1 is Diamond; slots 2-4 are Gold.",
+    "recommended_raw_in_order": "Raw product names emitted by the rank model before canonical product lookup.",
+    "top_recommended_matched": "Slot-1 canonical model recommendation product.",
+    "recommended_plan_types_in_order": "Standardized plan types for model recommendation slots.",
+    "top_recommended_plan_type": "Plan type of the slot-1 model recommendation.",
+    "raw_prob_fixed": "Rank model raw conversion probability for Fixed plan type.",
+    "raw_prob_tiered": "Rank model raw conversion probability for Tiered plan type.",
+    "raw_prob_bundled": "Rank model raw conversion probability for Bundled plan type.",
+    "expected_points_fixed": "raw_prob_fixed multiplied by the model's Fixed point weight.",
+    "expected_points_tiered": "raw_prob_tiered multiplied by the model's Tiered point weight.",
+    "expected_points_bundled": "raw_prob_bundled multiplied by the model's Bundled point weight.",
+    "expected_points_gap_1_2": "Difference between the highest and second-highest expected-points scores.",
+    "expected_points_gap_2_3": "Difference between the second-highest and third-highest expected-points scores.",
+    "has_top_rec_pitch_view": "True when Arcadia element-view events show moduleName='top_rec_pitch' for the call.",
+    "has_slide_recs_pitch_view": "True when Arcadia element-view events show moduleName='slide_recs_pitch' for the call.",
+    "has_all_plans_pitch_view": "True when Arcadia element-view events show moduleName='all_plans_pitch' for the call.",
+    "pitched_top_rec_first": "True when first_pitch_matched equals rec slot 1.",
+    "pitched_slide_rec_first": "True when first_pitch_matched equals rec slot 2, 3, or 4 and is not slot 1.",
+    "pitched_all_plans_first": "True when first_pitch_matched is outside rec slots 1-4.",
+    "product_type_adhered": "True when first_pitch_plan_category equals top_recommended_plan_type.",
+    "plan_adhered": "True when adhered_call == 1.0.",
+    "slide_first": "Alias of pitched_slide_rec_first.",
+    "all_plans_first": "Alias of pitched_all_plans_first.",
+    "all_plans_product_type_adhered": "True when all_plans_call == 1.0.",
+    "adhered_call": "1.0 when agent pitched slot 1 first and viewed the top-rec pitch module; else 0.0.",
+    "slide_call": "1.0 when agent pitched slots 2-4 first and viewed the slide-recs pitch module; else 0.0.",
+    "all_plans_call": "1.0 when all-plans module was viewed and the call was neither adhered_call nor slide_call; else 0.0.",
+    "classification_bucket": "Adherence, Slide, All Plans, or Unclassified, prioritized in that order.",
+    "first_pitch_type": "Diamond if first pitch is rec slot 1; Gold if slots 2-4; Silver if outside recs and points >= 25; otherwise Bronze.",
+    "pitch_types_in_order": "Diamond/Gold/Silver/Bronze type for each resolved pitch using the same tier logic as first_pitch_type.",
+    "sale_type": "Diamond/Gold/Silver/Bronze tier of sold product vs recommendation slots; null on non-converting calls.",
+    "sold_plan_name": "Sold product name from v_orders for converting calls.",
+    "sold_partner_name": "Sold partner/supplier/brand name from v_orders or plan masterlist.",
+    "first_pitch_plan_points": "Point value assigned to the first resolved pitched plan.",
+    "failed_qualification": "True when TXU Energy or TriEagle Energy qualification result is FAILURE for the call.",
+    "has_payless_pitch": "True when any raw pitch contains Payless.",
+    "has_low_rec": "True when any recommended plan type is Low.",
+    "happy_path": "1 when not failed qualification, no Payless pitch, no Low rec, and at least one resolved first pitch; else 0.",
+}
+
+
+DATASET_SCHEMA_HIDDEN_COLUMNS = {"raw_prob_low", "raw_prod_low", "expected_points_low"}
+
+
+DATASET_KPI_DEFINITIONS = [
+    ("Call Count", "count rows", "Number of calls in the selected dataframe slice.", "app.py / all tabs"),
+    ("Orders", "order_count.sum()", "Total submitted orders across calls. A call can have order_count >= 1.", "rec_query.py Step 9"),
+    ("Converting Calls", "(order_count > 0).sum()", "Number of calls with at least one order.", "rec_query.py Step 9"),
+    ("Overall Conversion Rate / Overall CR", "(order_count > 0).mean() * 100", "Share of all calls that resulted in any order. Denominator is all calls in the slice.", "app.py calc_performance_metric; rec_query.py order_rate"),
+    ("1st Pitch Conversion Rate / 1st Pitch CR", "(gcv_on_first_pitch > 0).mean() * 100", "Share of all calls where the first pitch resulted in a sale. Do not use order_count for this KPI.", "app.py calc_performance_metric; rec_query.py Step 12"),
+    ("GCV", "gcv.sum()", "Total gross contract value across calls.", "rec_query.py Step 9"),
+    ("GCV / Call", "gcv.mean()", "Expected gross contract value per call, including zeros on non-sales.", "app.py calc_performance_metric"),
+    ("GCV / 1st Pitch", "gcv_on_first_pitch.mean()", "Expected first-pitch gross contract value per call, including zeros.", "app.py calc_performance_metric"),
+    ("RPO", "gcv[order_count > 0].mean()", "Revenue per order / sale. This is the one GCV metric conditional on conversion.", "app.py calc_performance_metric"),
+    ("Points", "points.sum()", "Total plan points submitted across calls.", "rec_query.py Step 9"),
+    ("Points / Call", "points.mean()", "Average points per call, including zeros on non-sales.", "Agent Level tab"),
+    ("Points / 1st Pitch", "points_on_first_pitch.mean()", "Expected first-pitch points per call, including zeros.", "rec_query.py Step 12"),
+    ("Recommendation Mix - Plan Type", "value_counts(top_recommended_plan_type) / call_count * 100", "Share of calls where the slot-1 model recommendation has each plan type.", "Model Outputs tab"),
+    ("Recommendation Mix - Product Slot", "value_counts(selected recommended_matched_in_order slot) / call_count * 100", "Share or count of the selected recommendation slot/product.", "Model Outputs tab"),
+    ("First-Pitch Tier Mix", "value_counts(first_pitch_type) / call_count * 100", "Share of all calls whose first resolved pitch is Diamond, Gold, Silver, or Bronze.", "rec_query.py Step 12"),
+    ("Sale Tier Mix", "value_counts(sale_type) over order_count > 0 / converting_calls * 100", "Share of sales by sold-product tier. Non-sales are excluded.", "rec_query.py Step 12; Sale Mixes tab"),
+    ("Sales Count", "count rows where order_count > 0, grouped by selected sale dimension", "Number of converting calls in the selected group.", "Sale Mixes tab"),
+    ("Sale Mix RPO", "gcv.mean() among converting calls in the selected group", "RPO for the selected sale-mix grouping.", "Sale Mixes tab"),
+    ("Adherence Rate", "adhered_call.mean() * 100", "Share of calls where the agent pitched the Diamond recommendation first and viewed the top-rec module.", "rec_query.py Step 12"),
+    ("Slide Rate", "slide_call.mean() * 100", "Share of calls where the agent pitched a Gold/slide recommendation first and viewed the slide module.", "rec_query.py Step 12"),
+    ("All Plans Rate", "all_plans_call.mean() * 100", "Share of calls where all-plans view was used and the call was not Adherence or Slide.", "rec_query.py Step 12"),
+    ("Classification Bucket Share", "value_counts(classification_bucket) / call_count * 100", "Distribution of Adherence, Slide, All Plans, and Unclassified.", "rec_query.py Step 12"),
+    ("Product Type Adherence", "product_type_adhered.mean() * 100", "Share of calls where the first pitch plan type equals the top recommended plan type.", "rec_query.py Step 12"),
+    ("Pitched Top Rec First", "pitched_top_rec_first.mean() * 100", "Share of calls where first_pitch_matched equals rec slot 1, independent of view flag.", "rec_query.py Step 12"),
+    ("Pitched Slide Rec First", "pitched_slide_rec_first.mean() * 100", "Share of calls where first_pitch_matched equals rec slots 2-4, independent of view flag.", "rec_query.py Step 12"),
+    ("Model Confidence Gap 1-2", "expected_points_gap_1_2.mean()", "Average gap between the top and second expected-points scores.", "rec_query.py Step 7"),
+    ("Model Confidence Gap 2-3", "expected_points_gap_2_3.mean()", "Average gap between the second and third expected-points scores.", "rec_query.py Step 7"),
+    ("WTD vs P4WA Delta", "(WTD metric / P4WA pooled metric - 1) * 100", "Week-to-date metric compared with the pooled prior four full Monday-Sunday weeks.", "app.py wtd_vs_four_week_pooled / wk_pct_delta_vs_avg"),
+    ("Period-over-Period Delta", "(post_value / pre_value - 1) * 100", "Percent change from selected pre window to selected post window. Dollar/pct metrics keep their own unit in Pre/Post cells.", "Agent Behavior tab"),
+    ("Agent Performance Quartile", "ntile(4) over agent avg_points_on_first_pitch desc", "Quartile 1 contains agents with highest average points_on_first_pitch.", "rec_query.py Step 13"),
+]
+
+
+DERIVED_FIELD_DEFINITIONS = [
+    ("Resolved pitch order", "LLM/cache plan matching maps raw product_pitched to canonical v_orders plan names. Unresolved values are dropped before call-level arrays are built, and remaining pitches are re-indexed.", "rec_query.py Steps 5-6"),
+    ("Plan category corrections", "Known-stale masterlist categories are corrected via PLAN_CATEGORY_CORRECTIONS before pitch tier/category logic runs.", "rec_query.py Step 6"),
+    ("Recommended slots", "The rank payload contributes up to four recommendation slots: slot 1 is Diamond, slots 2-4 are Gold/slide recommendations.", "rec_query.py Step 7"),
+    ("Expected points", "For each plan type, raw conversion probability is multiplied by point weight. Gaps are computed after sorting expected-points values descending.", "rec_query.py Step 7"),
+    ("Element-view flags", "Arcadia element events set top_rec_pitch, slide_recs_pitch, and all_plans_pitch booleans at call level.", "rec_query.py Step 8"),
+    ("First pitch type", "Diamond if first_pitch_matched equals rec1; Gold if rec2-rec4; Silver if outside recs and first pitch points >= 25; Bronze otherwise.", "rec_query.py Step 12"),
+    ("Sale type", "Null on non-sales. Sold product is normalized to a term-stripped canonical key and compared to rec1-rec4; outside recs with sold points >= 25 is Silver; otherwise Bronze.", "rec_query.py Step 12"),
+    ("Adherence classification", "Adherence takes priority, then Slide, then All Plans, otherwise Unclassified. Adherence and Slide require both first-pitch match and matching Arcadia view flag.", "rec_query.py Step 12"),
+    ("Happy path", "happy_path = 1 only when the call is not a failed TXU/TriEagle qualification, has no Payless pitch, has no Low recommendation, and has at least one resolved pitch.", "rec_query.py Step 12"),
+    ("Performance quartile", "Agents are ranked by avg_points_on_first_pitch and split into four ntile buckets.", "rec_query.py Step 13"),
+]
+
+
+PIPELINE_SOURCE_DEFINITIONS = [
+    ("Raw model evaluations", "lakehouse_production.ai_products.raw_model_evaluated", "Rank payloads for agent-assist-product-rank."),
+    ("Pitch extraction", "ai_products_prod.energy.pitch_extraction", "Raw pitch names and pitch order used for pitch arrays; category derives through v_orders product_id and the masterlist."),
+    ("Arcadia frontend", "energy_prod.energy.rpt_arcadia_frontend", "Arcadia call scope and objection reason."),
+    ("Agent calls", "lakehouse_production.energy.rpt_agent_calls / energy_prod.energy.v_agent_calls", "Agent, center, order_count, and center-location filters."),
+    ("Order points", "lakehouse_production.energy.event_integration_orderpointssubmitted", "Call-level points and plan point lookup."),
+    ("Qualification results", "lakehouse_production.energy.event_energy_qualificationresult", "TXU/TriEagle failed qualification flag."),
+    ("Element viewed", "lakehouse_production.energy.event_arcadia_elementviewed", "Top rec / slide recs / all plans view flags."),
+    ("Orders", "energy_prod.energy.v_orders", "GCV, sold product, partner, canonical plan list."),
+    ("Plan masterlist", "ai_products_prod.arcadia.energy_plan_masterlist", "Plan names, supplier names, plan ids, and point lookup keys."),
+    ("Calls", "energy_prod.energy.v_calls", "Site/SERP, marketing bucket, mover/switcher, talk time."),
+]
+
+
+def _schema_sample_value(value):
+    try:
+        if pd.isna(value):
+            return "null"
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return "[]"
+    text = str(value)
+    return text[:180] + ("..." if len(text) > 180 else "")
+
+
+def _dataset_example_row(source: pd.DataFrame) -> pd.Series | None:
+    if source.empty:
+        return None
+
+    def _mask_true(col):
+        if col not in source.columns:
+            return pd.Series(False, index=source.index)
+        numeric = pd.to_numeric(source[col], errors="coerce")
+        text_true = source[col].astype(str).str.strip().str.casefold().isin({"true", "yes"})
+        return numeric.eq(1.0).fillna(False) | text_true
+
+    def _mask_eq(col, value):
+        if col not in source.columns:
+            return pd.Series(False, index=source.index)
+        return source[col].astype(str).str.casefold().eq(str(value).casefold())
+
+    preferred_masks = [
+        _mask_true("adhered_call") & _mask_eq("first_pitch_type", "Diamond"),
+        _mask_eq("classification_bucket", "Adherence") & _mask_eq("first_pitch_type", "Diamond"),
+        _mask_true("adhered_call"),
+        _mask_eq("first_pitch_type", "Diamond"),
+    ]
+    for mask in preferred_masks:
+        matches = source.loc[mask]
+        if not matches.empty:
+            return matches.iloc[0]
+    return source.iloc[0]
+
+
+def _dataset_schema_source(source: pd.DataFrame) -> pd.DataFrame:
+    hidden_cols = [c for c in DATASET_SCHEMA_HIDDEN_COLUMNS if c in source.columns]
+    return source.drop(columns=hidden_cols) if hidden_cols else source
+
+
+def _dataset_example_summary(example_row: pd.Series | None) -> str:
+    if example_row is None:
+        return "Example values are unavailable because the dataset is empty."
+    call_id = example_row.get("call_id", "unknown")
+    adhered_val = pd.to_numeric(pd.Series([example_row.get("adhered_call")]), errors="coerce").iloc[0]
+    is_adhered = bool(pd.notna(adhered_val) and adhered_val == 1.0)
+    is_diamond = str(example_row.get("first_pitch_type", "")).casefold() == "diamond"
+    bits = []
+    for label, col in [
+        ("Call", "call_id"),
+        ("Adhered", "adhered_call"),
+        ("First pitch tier", "first_pitch_type"),
+        ("Classification", "classification_bucket"),
+        ("Top rec type", "top_recommended_plan_type"),
+    ]:
+        if col in example_row.index:
+            bits.append(f"{label}: {example_row.get(col)}")
+    if bits:
+        if is_adhered and is_diamond:
+            return "Column examples use one consistent adhered Diamond row: " + " | ".join(bits)
+        return "Column examples use one consistent fallback row because no adhered Diamond row was available: " + " | ".join(bits)
+    return f"Column examples use one consistent row: {call_id}"
+
+
+def _series_non_null_count(source: pd.DataFrame, col: str) -> int:
+    if col not in source.columns:
+        return 0
+    return int(source[col].notna().sum())
+
+
+def _series_unique_count(source: pd.DataFrame, col: str):
+    if col not in source.columns:
+        return 0
+    return source[col].nunique(dropna=True)
+
+
+def _series_dtype(source: pd.DataFrame, col: str) -> str:
+    if col not in source.columns:
+        return "null"
+    return str(source[col].dtype)
+
+
+def build_dataset_column_dictionary(source: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    total = len(source)
+    example_row = _dataset_example_row(source)
+    for col in [c for c in source.columns if c not in DATASET_SCHEMA_HIDDEN_COLUMNS]:
+        non_null = _series_non_null_count(source, col)
+        unique_count = _series_unique_count(source, col)
+        rows.append({
+            "Column": col,
+            "Dtype": _series_dtype(source, col),
+            "Non-null Rows": non_null,
+            "Non-null %": f"{(non_null / total * 100):.1f}%" if total else "0.0%",
+            "Unique Values": unique_count,
+            "Example": _schema_sample_value(example_row[col]) if example_row is not None and col in example_row.index else "null",
+            "Definition": DATASET_COLUMN_DEFINITIONS.get(
+                col,
+                "Column is present in the loaded call-level extract; see rec_query.py final_sdf.select for pipeline inclusion.",
+            ),
+        })
+    return pd.DataFrame(rows)
+
+
+def build_key_value_summary(source: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for col in [
+        "center_location",
+        "site_serp",
+        "marketing_bucket",
+        "mover_switcher",
+        "top_recommended_plan_type",
+        "first_pitch_type",
+        "sale_type",
+        "classification_bucket",
+        "performance_quartile",
+        "happy_path",
+    ]:
+        if col not in source.columns:
+            continue
+        counts = source[col].value_counts(dropna=False).reset_index()
+        counts.columns = ["Value", "Rows"]
+        for _, row in counts.iterrows():
+            rows.append({
+                "Column": col,
+                "Value": "null" if pd.isna(row["Value"]) else str(row["Value"]),
+                "Rows": int(row["Rows"]),
+                "Share of Rows": f"{row['Rows'] / len(source) * 100:.1f}%" if len(source) else "0.0%",
+            })
+    return pd.DataFrame(rows)
 
 
 def prepare_agent_behavior_dataframe(d: pd.DataFrame, adherence_mode: str):
@@ -693,52 +1032,21 @@ st.title("📊 Product Rank Dash")
 st.caption(f"{date_str}  ·  {len(df):,} calls in view")
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_model, tab_agent, tab_sale_mix, tab_agent_level, tab_chat = st.tabs(["Model Outputs", "Agent Behavior & Performance", "Sale Mixes", "Agent Level", "AI Analyst"])
+_tab_kwargs = {}
+if TABS_SUPPORTS_ACTIVE_STATE:
+    _tab_kwargs = {"key": ACTIVE_TAB_KEY, "on_change": "rerun"}
+tab_model, tab_agent, tab_sale_mix, tab_agent_level, tab_chat, tab_dataset_schema = st.tabs(TAB_OPTIONS, **_tab_kwargs)
 
 # ════════════════════════════════════════════════════════════════════════════════
 # TAB 1 — MODEL OUTPUTS
 # ════════════════════════════════════════════════════════════════════════════════
 with tab_model:
 
-    # ── Section 1: Recommendation Mix ────────────────────────────────────────
-    st.subheader(
-        "Recommendation Mix",
-        help=(
-            "Trend model recommendation mix by plan type or product slot. KPI cards compare WTD plan-type "
-            "mix against pooled P4WA and ignore the sidebar date filter."
-        ),
-    )
-
     prod_col_candidates = ["recommended_in_order", "recommended_matched_in_order"]
     prod_col = next((c for c in prod_col_candidates if c in df.columns), None)
     rec_view_options = ["Plan type"] + (["Product"] if prod_col is not None else [])
 
-    rm_c1, rm_c2, rm_c3 = st.columns([1.1, 1.1, 1])
-    with rm_c1:
-        rec_mix_view = st.selectbox(
-            "View",
-            rec_view_options,
-            key="rec_mix_view",
-            help="Plan type uses the #1 model recommendation. Product uses a ranked recommendation slot.",
-        )
-    with rm_c2:
-        rec_mix_metric = st.selectbox(
-            "Metric",
-            ["Share of Calls", "Call Count"],
-            key="rec_mix_metric",
-            help="Share uses all calls in the period as the denominator.",
-        )
-    with rm_c3:
-        rec_mix_top_n = st.slider(
-            "Top categories",
-            min_value=3,
-            max_value=20,
-            value=10,
-            key="rec_mix_top_n",
-            help="Limits the chart when many categories are available.",
-        )
-
-    if rec_mix_view == "Plan type" and "top_recommended_plan_type" in df_nodatefilter.columns and "call_date" in df_nodatefilter.columns:
+    if "top_recommended_plan_type" in df_nodatefilter.columns and "call_date" in df_nodatefilter.columns:
         plan_types_all = sorted(df_nodatefilter["top_recommended_plan_type"].dropna().unique().tolist())
         if plan_types_all:
             def _wk_mix(fn):
@@ -757,7 +1065,32 @@ with tab_model:
                     ),
                 )
 
+    # ── Section 1: Recommendation Mix ────────────────────────────────────────
+    st.subheader(
+        "Recommendation Mix",
+        help=(
+            "Trend model recommendation mix by plan type or product slot. KPI cards compare WTD plan-type "
+            "mix against pooled P4WA and ignore the sidebar date filter."
+        ),
+    )
 
+    rm_c1, rm_c2 = st.columns(2)
+    with rm_c1:
+        rec_mix_view = st.selectbox(
+            "View",
+            rec_view_options,
+            key="rec_mix_view",
+            help="Plan type uses the #1 model recommendation. Product uses a ranked recommendation slot.",
+        )
+    with rm_c2:
+        rec_mix_metric = st.selectbox(
+            "Metric",
+            ["Share of Calls", "Call Count"],
+            key="rec_mix_metric",
+            help="Share uses all calls in the period as the denominator.",
+        )
+
+    if rec_mix_view == "Plan type" and "top_recommended_plan_type" in df_nodatefilter.columns and "call_date" in df_nodatefilter.columns:
         period_col = period_labels(df["call_date"], _chart_granularity)
         rec_ts = (
             df.dropna(subset=["call_date", "top_recommended_plan_type"])
@@ -772,7 +1105,7 @@ with tab_model:
         rec_ts["pct"] = rec_ts["n"] / totals * 100
         rec_ts["value"] = rec_ts["pct"] if rec_mix_metric == "Share of Calls" else rec_ts["n"]
 
-        plan_types = rec_ts["top_recommended_plan_type"].value_counts().head(rec_mix_top_n).index.tolist()
+        plan_types = rec_ts["top_recommended_plan_type"].value_counts().index.tolist()
 
         fig_mix = go.Figure()
         for pt in plan_types:
@@ -818,6 +1151,9 @@ with tab_model:
             ),
         )
 
+    pm_slot_for_compare = st.session_state.get("pm_slot", "Diamond")
+    products_for_compare: list[str] = []
+
     # Determine which columns hold the ranked product recommendations.
     # Current CSVs expose matched recommendation names as recommended_matched_in_order.
     prod_col_candidates = ["recommended_in_order", "recommended_matched_in_order"]
@@ -832,7 +1168,7 @@ with tab_model:
         all_diamond_products = sorted(prod_df["diamond_product"].dropna().unique().tolist())
         all_gold_products    = sorted(prod_df["gold_product"].dropna().unique().tolist())
 
-        pml_c1, pml_c2 = st.columns(2)
+        pml_c1, pml_c2, pml_c3 = st.columns([0.8, 1.6, 1])
         with pml_c1:
             pm_slot = st.selectbox(
                 "Recommendation Slot",
@@ -847,9 +1183,19 @@ with tab_model:
                 options=slot_product_opts,
                 default=[],
                 key="pm_products",
-                help="Leave blank to show the top 10 products by volume for the selected slot.",
+                help="Leave blank to show top products by volume for the selected slot.",
+            )
+        with pml_c3:
+            rec_mix_top_n = st.slider(
+                "Top categories",
+                min_value=3,
+                max_value=20,
+                value=10,
+                key="rec_mix_top_n",
+                help="Limits the product chart when no specific products are selected.",
             )
 
+        pm_slot_for_compare = pm_slot
         slot_product_col = "diamond_product" if pm_slot == "Diamond" else "gold_product"
         pm_df = prod_df.dropna(subset=[slot_product_col]).copy()
 
@@ -857,12 +1203,13 @@ with tab_model:
             pm_df = pm_df[pm_df[slot_product_col].isin(pm_products)]
             products_to_plot = pm_products
         else:
-            # Show top 10 by frequency to avoid chart overload
+            # Show top N by frequency to avoid chart overload.
             top_products = (
                 pm_df[slot_product_col].value_counts().head(rec_mix_top_n).index.tolist()
             )
             pm_df = pm_df[pm_df[slot_product_col].isin(top_products)]
             products_to_plot = top_products
+        products_for_compare = list(products_to_plot)
 
         if len(pm_df) > 0:
             pm_df["period"] = period_labels(pm_df["call_date"], _chart_granularity)
@@ -928,14 +1275,6 @@ with tab_model:
     elif rec_mix_view == "Product":
         st.info("Product recommendation column not found. Expected one of: recommended_in_order, recommended_matched_in_order.")
 
-    st.divider()
-    st.subheader(
-        "Recommendation Mix Comparison",
-        help=(
-            "Compare category share between Pre and Post windows. Date pickers span the full raw call_date range; "
-            "other sidebar filters still apply. % change is relative to the pre-period share."
-        ),
-    )
     df_mcmp = df_nodatefilter.dropna(subset=["call_date"]).copy()
     if "call_date" not in df_raw.columns or df_raw["call_date"].isna().all():
         st.caption("Raw `call_date` is missing for period bounds.")
@@ -956,26 +1295,8 @@ with tab_model:
             (c for c in ("recommended_in_order", "recommended_matched_in_order") if c in df_mcmp.columns),
             None,
         )
-        mix_mode_opts = ["Plan type (#1 recommendation)"]
-        if prod_col_m is not None:
-            mix_mode_opts.append("Product (ranked recommendation slot)")
-        mix_cmp_mode = st.radio(
-            "Mix to compare",
-            mix_mode_opts,
-            horizontal=True,
-            key="model_mix_cmp_mode",
-            help="Compare mix by top plan type or, when available, by product in a ranked recommendation slot.",
-        )
-        slot_idx_m = 0
-        if mix_cmp_mode.startswith("Product"):
-            slot_cmp = st.selectbox(
-                "Recommendation slot",
-                ["Diamond", "Gold"],
-                index=0,
-                key="model_mix_cmp_slot",
-                help="Diamond is recommendation slot 1; Gold is recommendation slot 2.",
-            )
-            slot_idx_m = 0 if slot_cmp == "Diamond" else 1
+        mix_cmp_view = rec_mix_view
+        slot_idx_m = 0 if pm_slot_for_compare == "Diamond" else 1
 
         mo_c1, mo_c2 = st.columns(2)
         with mo_c1:
@@ -1039,7 +1360,7 @@ with tab_model:
             export_fn = ""
             export_key = ""
 
-            if mix_cmp_mode.startswith("Plan"):
+            if mix_cmp_view == "Plan type":
                 if "top_recommended_plan_type" not in df_mcmp.columns:
                     st.info("Column top_recommended_plan_type is missing for plan-type comparison.")
                 else:
@@ -1055,7 +1376,10 @@ with tab_model:
                 else:
                     s_pre = _mo_share_product(pre_m, prod_col_m, slot_idx_m)
                     s_post = _mo_share_product(post_m, prod_col_m, slot_idx_m)
-                    idx_m = s_pre.index.union(s_post.index)
+                    if products_for_compare:
+                        idx_m = pd.Index(products_for_compare)
+                    else:
+                        idx_m = s_pre.index.union(s_post.index)
                     axis_lbl = "Product"
                     export_fn = "model_outputs_product_mix_period_compare.csv"
                     export_key = "model_mix_cmp_prod"
@@ -1076,6 +1400,7 @@ with tab_model:
                 t_m = t_m.sort_values(_m_c1, ascending=False).rename_axis(axis_lbl).reset_index()
 
                 sty_m = t_m.style.map(_mo_color_pct_chg, subset=["% change vs pre"])
+                sty_m = format_styler_numbers(sty_m, t_m)
                 sty_m = sty_m.set_properties(**{"text-align": "right"}, subset=[_m_c0, _m_c1, "% change vs pre"])
                 sty_m = sty_m.set_properties(**{"text-align": "left"}, subset=[axis_lbl])
                 st.dataframe(
@@ -1358,39 +1683,6 @@ with tab_model:
         )
         st.plotly_chart(fig_tier, use_container_width=True)
 
-        if "top_recommended_plan_type" in df.columns:
-            plan_cmp = (
-                df[df["first_pitch_type"].isin(SALE_TIER_ORDER)]
-                .groupby(["top_recommended_plan_type", "first_pitch_type"])
-                .agg(
-                    calls=("first_pitch_type", "count"),
-                    fp_cr=("gcv_on_first_pitch", lambda x: (x > 0).mean()),
-                    overall_cr=("order_count", lambda x: (x > 0).mean()),
-                    gcv_call=("gcv", "mean"),
-                    gcv_fp_ev=("gcv_on_first_pitch", "mean"),
-                )
-                .reset_index()
-            )
-            plan_cmp["fp_cr"]      = (plan_cmp["fp_cr"] * 100).round(1).astype(str) + "%"
-            plan_cmp["overall_cr"] = (plan_cmp["overall_cr"] * 100).round(1).astype(str) + "%"
-            plan_cmp["gcv_call"]   = plan_cmp["gcv_call"].round(0).apply(lambda x: f"${x:,.0f}")
-            plan_cmp["gcv_fp_ev"]  = plan_cmp["gcv_fp_ev"].round(0).apply(lambda x: f"${x:,.0f}")
-            plan_cmp = plan_cmp.rename(columns={
-                "top_recommended_plan_type": "Plan Type",
-                "first_pitch_type": "Tier",
-                "calls": "Calls",
-                "fp_cr": "1st Pitch CR",
-                "overall_cr": "Overall CR",
-                "gcv_call": "GCV / Call",
-                "gcv_fp_ev": "GCV / 1st Pitch",
-            })
-            render_table_expander(
-                "Conversion by plan type",
-                plan_cmp,
-                "conversion_by_plan_type_and_tier.csv",
-                key_suffix="model_plan_tier_cmp",
-                height_rows=min(len(plan_cmp), 40),
-            )
     else:
         st.info("One or more required columns are missing for this section.")
 
@@ -1400,22 +1692,13 @@ with tab_model:
 # ════════════════════════════════════════════════════════════════════════════════
 with tab_agent:
 
-    agent_adherence_type = st.radio(
-        "Tier source",
-        ["First Pitch", "Sale"],
-        index=0,
-        horizontal=True,
-        key="agent_adherence_type",
-        help="First Pitch uses the initial pitched tier. Sale uses the sold product tier among converting calls.",
-    )
+    agent_tier_source_options = ["First Pitch", "Sale"]
+    agent_adherence_type = st.session_state.get("agent_adherence_type", agent_tier_source_options[0])
+    if agent_adherence_type not in agent_tier_source_options:
+        agent_adherence_type = agent_tier_source_options[0]
 
     df_agent, _, agent_eff_mode = prepare_agent_behavior_dataframe(df, agent_adherence_type)
     df_nodate_agent, _, _ = prepare_agent_behavior_dataframe(df_nodatefilter, agent_adherence_type)
-
-    if agent_adherence_type == "Sale" and agent_eff_mode != "Sale":
-        st.warning(
-            "Sale tier needs `sale_type` and `order_count` on the call-level file. Showing first-pitch tiers instead."
-        )
 
     if "call_date" in df_nodate_agent.columns and "agent_tier_display" in df_nodate_agent.columns:
         tmp_fp = df_nodate_agent.dropna(subset=["call_date"]).copy()
@@ -1460,21 +1743,34 @@ with tab_agent:
         help="Trend tier mix or any conversion/value metric by tier, center, quartile, or overall.",
     )
 
-    tr_c1, tr_c2 = st.columns(2)
+    tr_c1, tr_c2, tr_c3 = st.columns(3)
     with tr_c1:
+        st.selectbox(
+            "Tier source",
+            agent_tier_source_options,
+            index=agent_tier_source_options.index(agent_adherence_type),
+            key="agent_adherence_type",
+            help="First Pitch uses the initial pitched tier. Sale uses the sold product tier among converting calls.",
+        )
+    with tr_c2:
         agent_trend_metric = st.selectbox(
             "Metric",
             ["Tier Mix", "Calls"] + PERFORMANCE_METRICS,
             key="agent_trend_metric",
             help="Tier Mix shows each tier's share of calls per period. Other metrics are calculated within each group.",
         )
-    with tr_c2:
+    with tr_c3:
         group_options = ["Tier", "Overall", "Center", "Agent Quartile"]
         agent_group_choice = st.selectbox(
             "Group By",
             group_options,
             key="agent_trend_group",
             help="Controls the line categories for performance metrics. Tier Mix always groups by tier.",
+        )
+
+    if agent_adherence_type == "Sale" and agent_eff_mode != "Sale":
+        st.warning(
+            "Sale tier needs `sale_type` and `order_count` on the call-level file. Showing first-pitch tiers instead."
         )
 
     if "call_date" in df_agent.columns:
@@ -1567,8 +1863,7 @@ with tab_agent:
     )
 
     _pop_core = {
-        "call_date", "top_recommended_plan_type",
-        "gcv_on_first_pitch", "order_count", "gcv",
+        "call_date", "gcv_on_first_pitch", "order_count", "gcv",
     }
     _pop_fp = {"first_pitch_type"}
     _pop_sale = {"sale_type", "order_count"}
@@ -1602,6 +1897,21 @@ with tab_agent:
                 key="cmp_post_range",
                 help="Current or test comparison window.",
             )
+
+        pop_group_options = {
+            "Overall": (None, "Overall"),
+            "Plan type": ("top_recommended_plan_type", "Plan Type"),
+            "Agent Quartile": ("performance_quartile", "Agent Quartile"),
+            "Center": ("center_location", "Center"),
+        }
+        pop_group_choice = st.selectbox(
+            "Group By",
+            list(pop_group_options.keys()),
+            index=0,
+            key="agent_pop_group_by",
+            help="Overall collapses across all calls. Other choices break the tier comparison out by the selected field.",
+        )
+        pop_group_col, pop_group_label = pop_group_options[pop_group_choice]
 
         if len(pre_range) == 2 and len(post_range) == 2:
 
@@ -1659,187 +1969,146 @@ with tab_agent:
                     return ""
                 return theme.period_comparison_delta_style(num, neutral_abs=3.0)
 
-            hm_specs = [
-                ("fp_cr",    "1st Pitch CR",         "pct"),
-                ("ov_cr",    "Overall CR",            "pct"),
-                ("gcv_fp",   "GCV / 1st Pitch",  "dollar"),
-                ("gcv_call", "GCV / Call",            "dollar"),
+            METRICS = [
+                ("mix",      "Mix",                    "pct",    False),
+                ("fp_cr",    "First Pitch CR",          "pct",    False),
+                ("ov_cr",    "Overall CR",              "pct",    False),
+                ("gcv_fp",   "GCV / First Pitch",  "dollar", True),
+                ("gcv_call", "GCV / Call",              "dollar", True),
             ]
 
-            hm_cols = st.columns(4)
-            for i, (metric, label, fmt) in enumerate(hm_specs):
-                post_v = overall_metric(post_df, metric)
-                pre_v  = overall_metric(pre_df,  metric)
-                if fmt == "pct":
-                    val_str   = f"{post_v:.1f}%" if not pd.isna(post_v) else "—"
-                    delta_str = (f"{post_v - pre_v:+.1f}pp" if not pd.isna(post_v) and not pd.isna(pre_v) else None)
-                else:
-                    val_str   = f"${post_v:,.0f}" if not pd.isna(post_v) else "—"
-                    delta_str = (f"${post_v - pre_v:+,.0f}" if not pd.isna(post_v) and not pd.isna(pre_v) else None)
-                hm_cols[i].metric(label=label, value=val_str, delta=delta_str,
-                                  help=f"Post period value · delta vs pre period")
-
-            def compute_metrics(source):
+            def compute_tier_metrics(source, group_col=None):
                 if len(source) == 0:
                     return pd.DataFrame()
 
                 rows = []
-                grp = (
-                    source.dropna(subset=["top_recommended_plan_type"])
-                    .groupby("top_recommended_plan_type")
-                )
-                for rtype, g in grp:
-                    n_rec = len(g)
+                if group_col is None:
+                    groups = [(None, source)]
+                else:
+                    groups = list(source.dropna(subset=[group_col]).groupby(group_col, sort=True))
+
+                for group_value, g in groups:
+                    n_group = len(g)
                     for tier in SALE_TIER_ORDER:
                         sub = g[g["agent_tier_display"] == tier] if "agent_tier_display" in g.columns else g.iloc[0:0]
                         n_sub    = len(sub)
-                        mix      = n_sub / n_rec * 100 if n_rec > 0 else float("nan")
+                        mix      = n_sub / n_group * 100 if n_group > 0 else float("nan")
                         fp_cr    = (sub["gcv_on_first_pitch"] > 0).mean() * 100 if n_sub > 0 else float("nan")
                         ov_cr    = (sub["order_count"] > 0).mean() * 100 if n_sub > 0 else float("nan")
                         # FIX: GCV / 1st Pitch EV = mean over all calls in subset (zeros included)
                         gcv_fp   = sub["gcv_on_first_pitch"].mean() if n_sub > 0 else float("nan")
                         gcv_call = sub["gcv"].mean() if n_sub > 0 else float("nan")
-                        rows.append({
-                            "rec_type": rtype,
+                        row = {
                             "tier":     tier,
                             "mix":      mix,
                             "fp_cr":    fp_cr,
                             "ov_cr":    ov_cr,
                             "gcv_fp":   gcv_fp,
                             "gcv_call": gcv_call,
-                        })
+                        }
+                        if group_col is not None:
+                            row["group_value"] = group_value
+                        rows.append(row)
                 return pd.DataFrame(rows)
 
-            pre_metrics  = compute_metrics(pre_df)
-            post_metrics = compute_metrics(post_df)
-
-            if not pre_metrics.empty and not post_metrics.empty:
-
-                merged = pre_metrics.merge(
-                    post_metrics,
-                    on=["rec_type", "tier"],
-                    suffixes=("_pre", "_post"),
-                )
-
-                METRICS = [
-                    ("mix",      "Mix",                    "pct",    False),
-                    ("fp_cr",    "First Pitch CR",          "pct",    False),
-                    ("ov_cr",    "Overall CR",              "pct",    False),
-                    ("gcv_fp",   "GCV / First Pitch",  "dollar", True),
-                    ("gcv_call", "GCV / Call",              "dollar", True),
-                ]
-
-                TIER_ORDER = SALE_TIER_ORDER
-                rec_types = sorted(merged["rec_type"].unique())
-
-                display_rows = []
-                row_idx = 0
-                for rt in rec_types:
-                    for tier in TIER_ORDER:
-                        match = merged[(merged["rec_type"] == rt) & (merged["tier"] == tier)]
-                        if match.empty:
-                            continue
-                        r = match.iloc[0]
-                        row = {
-                            "Rec Type":  rt if tier == TIER_ORDER[0] else "",
-                            "Tier":      tier,
-                        }
-                        for col, label, fmt, hib in METRICS:
-                            pre_v  = r[f"{col}_pre"]
-                            post_v = r[f"{col}_post"]
-                            row[f"{label} {pre_label}"]  = fmt_val(pre_v,  fmt)
-                            row[f"{label} {post_label}"] = fmt_val(post_v, fmt)
-                            row[f"{label} Delta"] = fmt_delta(pre_v, post_v, fmt)
-                        display_rows.append(row)
-                        row_idx += 1
-
-                display_df = pd.DataFrame(display_rows)
-                delta_cols = [f"{label} Delta" for _, label, _, _ in METRICS]
-                styler = display_df.style.map(color_delta_cell, subset=delta_cols)
-
-                col_order = ["Rec Type", "Tier"]
-                for _, label, _, _ in METRICS:
-                    col_order += [f"{label} {pre_label}", f"{label} {post_label}", f"{label} Delta"]
-
-                styler = styler.set_properties(**{"text-align": "right"}, subset=col_order[2:])
-                styler = styler.set_properties(**{"text-align": "left"},  subset=["Rec Type", "Tier"])
-
-                st.dataframe(
-                    styler,
-                    use_container_width=True,
-                    hide_index=True,
-                    column_order=col_order,
-                    height=dataframe_display_height(len(display_df)),
-                )
-                table_export_row(display_df, "agent_period_rec_type_tier.csv", key_suffix="agent_pop_rec")
-
-                st.subheader(
-                    "Overall Comparison",
-                    help="Same period comparison collapsed across recommendation plan types.",
-                )
-
-                def compute_overall_metrics(source):
-                    if len(source) == 0:
-                        return pd.DataFrame()
-                    total_calls = len(source)
-                    rows = []
-                    for tier in SALE_TIER_ORDER:
-                        sub = source[source["agent_tier_display"] == tier] if "agent_tier_display" in source.columns else source.iloc[0:0]
-                        n_sub = len(sub)
-                        mix      = n_sub / total_calls * 100 if total_calls > 0 else float("nan")
-                        fp_cr    = (sub["gcv_on_first_pitch"] > 0).mean() * 100 if n_sub > 0 else float("nan")
-                        ov_cr    = (sub["order_count"] > 0).mean() * 100 if n_sub > 0 else float("nan")
-                        # FIX: GCV / 1st Pitch EV = mean over all calls (zeros included)
-                        gcv_fp   = sub["gcv_on_first_pitch"].mean() if n_sub > 0 else float("nan")
-                        gcv_call = sub["gcv"].mean() if n_sub > 0 else float("nan")
-                        rows.append({
-                            "tier":     tier,
-                            "mix":      mix,
-                            "fp_cr":    fp_cr,
-                            "ov_cr":    ov_cr,
-                            "gcv_fp":   gcv_fp,
-                            "gcv_call": gcv_call,
-                        })
-                    return pd.DataFrame(rows)
-
-                pre_overall  = compute_overall_metrics(pre_df)
-                post_overall = compute_overall_metrics(post_df)
-
-                if not pre_overall.empty and not post_overall.empty:
-                    merged_ov = pre_overall.merge(post_overall, on="tier", suffixes=("_pre", "_post"))
-
-                    ov_rows = []
-                    for _, r in merged_ov.iterrows():
-                        row = {"Tier": r["tier"]}
-                        for col, label, fmt, hib in METRICS:
-                            pre_v  = r[f"{col}_pre"]
-                            post_v = r[f"{col}_post"]
-                            row[f"{label} {pre_label}"]  = fmt_val(pre_v,  fmt)
-                            row[f"{label} {post_label}"] = fmt_val(post_v, fmt)
-                            row[f"{label} Delta"]        = fmt_delta(pre_v, post_v, fmt)
-                        ov_rows.append(row)
-
-                    ov_df = pd.DataFrame(ov_rows)
-                    ov_styler = ov_df.style.map(color_delta_cell, subset=delta_cols)
-
-                    ov_col_order = ["Tier"]
-                    for _, label, _, _ in METRICS:
-                        ov_col_order += [f"{label} {pre_label}", f"{label} {post_label}", f"{label} Delta"]
-
-                    ov_styler = ov_styler.set_properties(**{"text-align": "right"}, subset=ov_col_order[1:])
-                    ov_styler = ov_styler.set_properties(**{"text-align": "left"},  subset=["Tier"])
-
-                    st.dataframe(
-                        ov_styler,
-                        use_container_width=True,
-                        hide_index=True,
-                        column_order=ov_col_order,
-                        height=dataframe_display_height(len(ov_df)),
-                    )
-                    table_export_row(ov_df, "agent_period_overall_tier.csv", key_suffix="agent_pop_ov")
-
+            group_missing = pop_group_col is not None and pop_group_col not in df_nodate_agent.columns
+            if group_missing:
+                st.info(f"Column `{pop_group_col}` is missing for {pop_group_label} comparison.")
             else:
-                st.info("Not enough data in selected date ranges to compute metrics.")
+                pre_metrics  = compute_tier_metrics(pre_df, pop_group_col)
+                post_metrics = compute_tier_metrics(post_df, pop_group_col)
+
+                if not pre_metrics.empty and not post_metrics.empty:
+                    merge_keys = ["tier"] if pop_group_col is None else ["group_value", "tier"]
+                    merged = pre_metrics.merge(post_metrics, on=merge_keys, suffixes=("_pre", "_post"))
+
+                    TIER_ORDER = SALE_TIER_ORDER
+
+                    if pop_group_col is None:
+                        st.subheader(
+                            "Overall Comparison",
+                            help="Same period comparison collapsed across all grouping fields.",
+                        )
+                    else:
+                        st.subheader(
+                            f"{pop_group_label} Comparison",
+                            help=f"Same period comparison broken out by {pop_group_label.lower()}.",
+                        )
+
+                    display_rows = []
+                    if pop_group_col is None:
+                        for tier in TIER_ORDER:
+                            match = merged[merged["tier"] == tier]
+                            if match.empty:
+                                continue
+                            r = match.iloc[0]
+                            row = {"Tier": tier}
+                            for col, label, fmt, hib in METRICS:
+                                pre_v  = r[f"{col}_pre"]
+                                post_v = r[f"{col}_post"]
+                                row[f"{label} {pre_label}"]  = fmt_val(pre_v,  fmt)
+                                row[f"{label} {post_label}"] = fmt_val(post_v, fmt)
+                                row[f"{label} Delta"]        = fmt_delta(pre_v, post_v, fmt)
+                            display_rows.append(row)
+                    else:
+                        group_values = sorted(merged["group_value"].dropna().unique(), key=lambda v: str(v))
+                        for group_value in group_values:
+                            for tier in TIER_ORDER:
+                                match = merged[
+                                    (merged["group_value"] == group_value) &
+                                    (merged["tier"] == tier)
+                                ]
+                                if match.empty:
+                                    continue
+                                r = match.iloc[0]
+                                row = {
+                                    pop_group_label: str(group_value) if tier == TIER_ORDER[0] else "",
+                                    "Tier": tier,
+                                }
+                                for col, label, fmt, hib in METRICS:
+                                    pre_v  = r[f"{col}_pre"]
+                                    post_v = r[f"{col}_post"]
+                                    row[f"{label} {pre_label}"]  = fmt_val(pre_v,  fmt)
+                                    row[f"{label} {post_label}"] = fmt_val(post_v, fmt)
+                                    row[f"{label} Delta"] = fmt_delta(pre_v, post_v, fmt)
+                                display_rows.append(row)
+
+                    display_df = pd.DataFrame(display_rows)
+                    if display_df.empty:
+                        st.info("Not enough data in selected date ranges to compute metrics.")
+                    else:
+                        delta_cols = [f"{label} Delta" for _, label, _, _ in METRICS]
+                        styler = display_df.style.map(color_delta_cell, subset=delta_cols)
+                        styler = format_styler_numbers(styler, display_df)
+
+                        col_order = ["Tier"] if pop_group_col is None else [pop_group_label, "Tier"]
+                        for _, label, _, _ in METRICS:
+                            col_order += [f"{label} {pre_label}", f"{label} {post_label}", f"{label} Delta"]
+
+                        left_cols = ["Tier"] if pop_group_col is None else [pop_group_label, "Tier"]
+                        right_cols = col_order[1:] if pop_group_col is None else col_order[2:]
+                        styler = styler.set_properties(**{"text-align": "right"}, subset=right_cols)
+                        styler = styler.set_properties(**{"text-align": "left"}, subset=left_cols)
+
+                        st.dataframe(
+                            styler,
+                            use_container_width=True,
+                            hide_index=True,
+                            column_order=col_order,
+                            height=dataframe_display_height(len(display_df)),
+                        )
+                        export_slug = (
+                            "overall"
+                            if pop_group_col is None
+                            else "".join(c if c.isalnum() else "_" for c in pop_group_label.lower()).strip("_")
+                        )
+                        table_export_row(
+                            display_df,
+                            f"agent_period_{export_slug}_tier.csv",
+                            key_suffix=f"agent_pop_{export_slug}",
+                        )
+                else:
+                    st.info("Not enough data in selected date ranges to compute metrics.")
 
             kpi_specs = [
                 ("fp_cr", "First pitch conversion rate", "pct"),
@@ -2111,8 +2380,6 @@ with tab_sale_mix:
             if metric == "Sales Count":
                 return source[group_col].value_counts(dropna=True).astype(float)
             grouped = source.dropna(subset=[group_col]).groupby(group_col)
-            if metric == "GCV / Sale":
-                return grouped["gcv"].mean() if "gcv" in source.columns else pd.Series(dtype=float)
             if metric == "RPO":
                 if "gcv" not in source.columns or "order_count" not in source.columns:
                     return pd.Series(dtype=float)
@@ -2130,7 +2397,8 @@ with tab_sale_mix:
             sm_sales["period"] = period_labels(sm_sales["call_date"], _chart_granularity)
             sm_sales["period_display"] = period_display(sm_sales["period"], _chart_granularity)
 
-            sm_c1, sm_c2, sm_c3, sm_c4 = st.columns([1, 1, 1, 1])
+            st.markdown("**Chart setup**")
+            sm_c1, sm_c2 = st.columns(2)
             with sm_c1:
                 sale_mix_dimension = st.selectbox(
                     "Dimension",
@@ -2139,13 +2407,23 @@ with tab_sale_mix:
                     help="Choose whether the chart groups converting sales by partner or by sold plan.",
                 )
             with sm_c2:
+                sale_mix_metric_options = ["Share of Sales", "Sales Count", "RPO"]
+                if st.session_state.get("sale_mix_metric") not in sale_mix_metric_options:
+                    st.session_state["sale_mix_metric"] = "RPO"
                 sale_mix_metric = st.selectbox(
                     "Metric",
-                    ["Share of Sales", "Sales Count", "GCV / Sale", "RPO"],
+                    sale_mix_metric_options,
                     key="sale_mix_metric",
                     help="Metric to trend for the selected sale dimension.",
                 )
-            with sm_c3:
+
+            dim_key = "partner" if sale_mix_dimension == "Provider" else "plan"
+            axis_lbl = "Partner" if sale_mix_dimension == "Provider" else "Sold plan"
+            vc = sm_sales[dim_key].value_counts()
+
+            st.markdown("**Category selection**")
+            sm_cat_c1, sm_cat_c2 = st.columns([2, 1])
+            with sm_cat_c1:
                 sale_mix_top_n = st.slider(
                     "Top categories",
                     3,
@@ -2154,7 +2432,7 @@ with tab_sale_mix:
                     key="sale_mix_top_n",
                     help="Default category selection when the selection list resets.",
                 )
-            with sm_c4:
+            with sm_cat_c2:
                 include_other = st.checkbox(
                     "Include Other",
                     value=True,
@@ -2162,9 +2440,6 @@ with tab_sale_mix:
                     help="Bucket unselected categories into Other.",
                 )
 
-            dim_key = "partner" if sale_mix_dimension == "Provider" else "plan"
-            axis_lbl = "Partner" if sale_mix_dimension == "Provider" else "Sold plan"
-            vc = sm_sales[dim_key].value_counts()
             sel_key = f"sale_mix_selected_{dim_key}"
             sig_key = f"sale_mix_sig_{dim_key}"
             dim_sig = (len(sm_sales), tuple(vc.head(80).items()), sale_mix_top_n)
@@ -2200,13 +2475,10 @@ with tab_sale_mix:
             else:
                 ts = (
                     sm_plot.groupby(["period", "period_display", group_col], observed=True)
-                    .agg(gcv_sum=("gcv", "sum"), gcv_mean=("gcv", "mean"), order_sum=("order_count", "sum"), n=("order_count", "size"))
+                    .agg(gcv_sum=("gcv", "sum"), order_sum=("order_count", "sum"))
                     .reset_index()
                 )
-                if sale_mix_metric == "GCV / Sale":
-                    ts["value"] = ts["gcv_mean"]
-                else:
-                    ts["value"] = ts["gcv_sum"] / ts["order_sum"].replace(0, pd.NA)
+                ts["value"] = ts["gcv_sum"] / ts["order_sum"].replace(0, pd.NA)
 
             cats_sorted = sorted(ts[group_col].dropna().unique().tolist(), key=lambda x: (x == "Other", str(x)))
             fig_sale = go.Figure()
@@ -2333,6 +2605,7 @@ with tab_sale_mix:
                 t_disp[_cp0] = t_disp[_cp0].apply(lambda v: format_chart_value(v, sale_mix_metric))
                 t_disp[_cp1] = t_disp[_cp1].apply(lambda v: format_chart_value(v, sale_mix_metric))
                 sty_cmp = t_disp.style.map(_sm_color_pct_chg, subset=["% change vs pre"])
+                sty_cmp = format_styler_numbers(sty_cmp, t_disp)
                 sty_cmp = sty_cmp.set_properties(**{"text-align": "right"}, subset=[_cp0, _cp1, "% change vs pre"])
                 sty_cmp = sty_cmp.set_properties(**{"text-align": "left"}, subset=[axis_lbl])
                 st.dataframe(
@@ -2505,7 +2778,7 @@ with tab_agent_level:
         fmt_df["Calls"] = fmt_df["Calls"].apply(lambda x: f"{x:,}")
 
         st.dataframe(
-            fmt_df,
+            format_table_for_display(fmt_df),
             use_container_width=True,
             hide_index=True,
             height=dataframe_display_height(len(fmt_df)),
@@ -2515,6 +2788,98 @@ with tab_agent_level:
     else:
         missing = agent_needed - set(df.columns)
         st.info(f"Columns missing for agent table: {', '.join(sorted(missing))}")
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 6 — DATASET SCHEMA
+# ════════════════════════════════════════════════════════════════════════════════
+with tab_dataset_schema:
+    st.subheader(
+        "Dataset Schema",
+        help=(
+            "Live schema for the loaded call-level extract plus KPI definitions aligned to rec_query.py "
+            "and the dashboard calculation helpers."
+        ),
+    )
+
+    st.markdown(
+        """
+        This extract is one row per post-credit, pitch-stage call. It is built by
+        `rec_query.py` from Arcadia pitch extraction, model recommendation payloads,
+        agent/order tables, element-view events, v_orders, the plan masterlist, and
+        call metadata. Unresolved pitch names are dropped before the resolved pitch
+        arrays are re-indexed, so first-pitch KPIs use the first resolved plan pitch.
+        """
+    )
+
+    raw_min = df_raw["call_date"].min().date() if "call_date" in df_raw.columns and df_raw["call_date"].notna().any() else None
+    raw_max = df_raw["call_date"].max().date() if "call_date" in df_raw.columns and df_raw["call_date"].notna().any() else None
+    schema_source = _dataset_schema_source(df_raw)
+    example_row = _dataset_example_row(df_raw)
+    schema_cols = st.columns(4)
+    schema_cols[0].metric("Rows", f"{len(df_raw):,}")
+    schema_cols[1].metric("Columns", f"{schema_source.shape[1]:,}")
+    schema_cols[2].metric("Raw Date Min", str(raw_min) if raw_min else "—")
+    schema_cols[3].metric("Raw Date Max", str(raw_max) if raw_max else "—")
+
+    st.markdown("**Pipeline Source Tables**")
+    source_df = pd.DataFrame(
+        PIPELINE_SOURCE_DEFINITIONS,
+        columns=["Source Area", "Source Table", "Used For"],
+    )
+    st.dataframe(
+        source_df,
+        use_container_width=True,
+        hide_index=True,
+        height=dataframe_display_height(len(source_df)),
+    )
+
+    st.markdown("**Column Dictionary**")
+    st.caption(_dataset_example_summary(example_row))
+    column_dict_df = build_dataset_column_dictionary(df_raw)
+    st.dataframe(
+        format_table_for_display(column_dict_df),
+        use_container_width=True,
+        hide_index=True,
+        height=dataframe_display_height(len(column_dict_df), cap=2600),
+    )
+    table_export_row(column_dict_df, "dataset_column_dictionary.csv", key_suffix="dataset_columns")
+
+    st.markdown("**KPI Calculations**")
+    kpi_def_df = pd.DataFrame(
+        DATASET_KPI_DEFINITIONS,
+        columns=["KPI / Metric", "Calculation", "Interpretation", "Source"],
+    )
+    st.dataframe(
+        kpi_def_df,
+        use_container_width=True,
+        hide_index=True,
+        height=dataframe_display_height(len(kpi_def_df), cap=1800),
+    )
+    table_export_row(kpi_def_df, "dataset_kpi_calculations.csv", key_suffix="dataset_kpis")
+
+    st.markdown("**Derived Field Rules from rec_query.py**")
+    derived_def_df = pd.DataFrame(
+        DERIVED_FIELD_DEFINITIONS,
+        columns=["Derived Field / Rule", "Definition", "Source"],
+    )
+    st.dataframe(
+        derived_def_df,
+        use_container_width=True,
+        hide_index=True,
+        height=dataframe_display_height(len(derived_def_df)),
+    )
+
+    key_values_df = build_key_value_summary(df_raw)
+    if not key_values_df.empty:
+        st.markdown("**Key Categorical Values in Current Extract**")
+        st.dataframe(
+            format_table_for_display(key_values_df),
+            use_container_width=True,
+            hide_index=True,
+            height=dataframe_display_height(min(len(key_values_df), 60), cap=2200),
+        )
+        table_export_row(key_values_df, "dataset_key_categorical_values.csv", key_suffix="dataset_key_values")
 
 
 _AI_PRIOR_TOOL_OMITTED = (
@@ -2527,6 +2892,31 @@ _AI_RUNCODE_ERROR_SUFFIX = (
 )
 
 AI_ANALYST_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "request_confirmation",
+            "description": (
+                "Call this tool exactly once before writing any execute_python code. "
+                "Describe the analysis plan clearly in 2-4 sentences and ask the user to confirm. "
+                "Do NOT call execute_python until the user has replied affirmatively to a request_confirmation call."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "plan": {
+                        "type": "string",
+                        "description": (
+                            "A plain-language description of what you are about to do: what columns/filters "
+                            "you will use, what the output will be (table, chart, metric), and any assumptions "
+                            "you are making."
+                        ),
+                    },
+                },
+                "required": ["plan"],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -2634,6 +3024,51 @@ def truncate_ai_agent_messages(messages: list[dict]) -> list[dict]:
 # ════════════════════════════════════════════════════════════════════════════════
 with tab_chat:
 
+    def build_filters_summary(
+        date_range,
+        sel_center,
+        sel_agent,
+        happy_only,
+        sel_brand_nonbrand,
+        sel_mkt,
+        sel_serp,
+        sel_mov,
+        sel_quartile,
+        sel_rec_type,
+    ) -> str:
+        def _join(values):
+            return ", ".join(str(v) for v in values) if values else "All"
+
+        lines = []
+
+        if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+            lines.append(f"Date range: {date_range[0]} to {date_range[1]}")
+        else:
+            lines.append("Date range: not set (no date filter applied)")
+
+        centers_text = _join(sel_center)
+        if sel_center and set(sel_center) == {"Durban", "Jamaica"} and len(sel_center) == 2:
+            centers_text += " (default selection)"
+        lines.append(f"Centers: {centers_text}")
+        lines.append(f"Agents: {_join(sel_agent)}")
+        lines.append(
+            f"Happy Path Only: {happy_only} "
+            f"({'df_filtered and df_nodatefilter are pre-filtered to happy_path == 1' if happy_only else 'all calls included in filtered frames'})"
+        )
+
+        if sel_brand_nonbrand and len(sel_brand_nonbrand) < 2:
+            lines.append(f"Brand/Non-Brand: {_join(sel_brand_nonbrand)}")
+        else:
+            lines.append("Brand/Non-Brand: no filter (all)")
+
+        lines.append(f"Marketing Bucket: {_join(sel_mkt)}")
+        lines.append(f"Site / SERP: {_join(sel_serp)}")
+        lines.append(f"Mover / Switcher: {_join(sel_mov)}")
+        lines.append(f"Agent Quartile: {_join(sel_quartile)}")
+        lines.append(f"Rec Product Type: {_join(sel_rec_type)}")
+
+        return "\n".join(lines)
+
 
     def run_code(code: str, dataframe: pd.DataFrame):
         import plotly.graph_objects as _go
@@ -2715,6 +3150,81 @@ with tab_chat:
 
         return _re.sub(r"!\[[^\]]*\]\([^)]*\)", "", str(text)).strip()
 
+    def _numeric_axis_values(values) -> list[float]:
+        if values is None:
+            return []
+        try:
+            vals = list(values)
+        except TypeError:
+            vals = [values]
+        ser = pd.to_numeric(pd.Series(vals), errors="coerce").dropna()
+        return ser.astype(float).tolist()
+
+    def _plotly_layout_axis_name(axis_ref, dim: str) -> str:
+        if not axis_ref or axis_ref == dim:
+            return f"{dim}axis"
+        return f"{dim}axis{str(axis_ref).replace(dim, '', 1)}"
+
+    def _fix_percent_template(template, dim: str) -> str:
+        if not isinstance(template, str):
+            return template
+        import re as _re
+
+        pattern = _re.compile(rf"%\{{{dim}:(?P<fmt>[^}}]*)%\}}")
+
+        def repl(match):
+            fmt = match.group("fmt")
+            if not fmt.endswith("f"):
+                fmt = f"{fmt}f"
+            return f"%{{{dim}:{fmt}}}%"
+
+        return pattern.sub(repl, template)
+
+    def _is_numeric_percent_tickformat(tickformat: str) -> bool:
+        if not isinstance(tickformat, str):
+            return False
+        fmt = tickformat.strip()
+        return fmt.endswith("%") and all(c in "$,.0123456789+-~%" for c in fmt)
+
+    def normalize_ai_figure_percent_axes(fig):
+        """Prevent Plotly percent tickformat from multiplying 0-100 percentage data."""
+        layout = fig.layout.to_plotly_json()
+        for axis_name, axis_conf in layout.items():
+            if not isinstance(axis_conf, dict):
+                continue
+            if not axis_name.startswith(("xaxis", "yaxis")):
+                continue
+            tickformat = axis_conf.get("tickformat")
+            if not _is_numeric_percent_tickformat(tickformat):
+                continue
+
+            dim = axis_name[0]
+            axis_values = []
+            axis_traces = []
+            for trace in fig.data:
+                axis_ref = getattr(trace, f"{dim}axis", None) or dim
+                if _plotly_layout_axis_name(axis_ref, dim) == axis_name:
+                    axis_values.extend(_numeric_axis_values(getattr(trace, dim, None)))
+                    axis_traces.append(trace)
+            if not axis_values:
+                continue
+
+            max_abs = max(abs(v) for v in axis_values)
+            if max_abs <= 1.5:
+                continue
+
+            fig.update_layout(**{f"{axis_name}_tickformat": None, f"{axis_name}_ticksuffix": "%"})
+            for trace in axis_traces:
+                for prop in ("hovertemplate", "texttemplate"):
+                    try:
+                        current = getattr(trace, prop, None)
+                        fixed = _fix_percent_template(current, dim)
+                        if fixed != current:
+                            setattr(trace, prop, fixed)
+                    except Exception:
+                        pass
+        return fig
+
     def render_step_body(step: dict, *, export_key_suffix: str = "step"):
         kind = step.get("kind")
         if kind == "user":
@@ -2722,6 +3232,11 @@ with tab_chat:
         elif kind == "thinking":
             st.markdown(f"**Planning - {step.get('summary', '')}**")
             st.markdown(step.get("content", ""))
+        elif kind == "confirmation_pending":
+            st.info(
+                f"**Proposed analysis:**\n\n{step.get('content', '')}"
+                "\n\n*Reply to confirm or ask for changes.*"
+            )
         elif kind == "code":
             st.markdown(f"**Step {step.get('n')} - {step.get('rationale', '')}**")
             st.code(step.get("code", ""), language="python")
@@ -2737,12 +3252,13 @@ with tab_chat:
                     figure_keys.add(k)
                     if k != "figure" or len(figure_items) > 1:
                         st.markdown(f"**{k}**")
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(normalize_ai_figure_percent_axes(fig), use_container_width=True)
                 if "summary" in r:
                     if isinstance(r["summary"], pd.DataFrame):
                         sdf = r["summary"]
+                        sdf_display = format_table_for_display(sdf)
                         st.dataframe(
-                            sdf,
+                            sdf_display,
                             use_container_width=True,
                             hide_index=True,
                             height=dataframe_display_height(len(sdf)),
@@ -2754,8 +3270,9 @@ with tab_chat:
                         )
                     elif isinstance(r["summary"], pd.Series):
                         sdf = r["summary"].reset_index()
+                        sdf_display = format_table_for_display(sdf)
                         st.dataframe(
-                            sdf,
+                            sdf_display,
                             use_container_width=True,
                             hide_index=True,
                             height=dataframe_display_height(len(sdf)),
@@ -2772,8 +3289,9 @@ with tab_chat:
                     if isinstance(v, pd.DataFrame):
                         st.markdown(f"**{k}**")
                         slug = _ai_export_slug(k)
+                        v_display = format_table_for_display(v)
                         st.dataframe(
-                            v,
+                            v_display,
                             use_container_width=True,
                             hide_index=True,
                             height=dataframe_display_height(len(v)),
@@ -2787,8 +3305,9 @@ with tab_chat:
                         st.markdown(f"**{k}**")
                         slug = _ai_export_slug(k)
                         ser_df = v.reset_index()
+                        ser_display = format_table_for_display(ser_df)
                         st.dataframe(
-                            ser_df,
+                            ser_display,
                             use_container_width=True,
                             hide_index=True,
                             height=dataframe_display_height(len(ser_df)),
@@ -2801,10 +3320,11 @@ with tab_chat:
                     else:
                         st.write(f"**{k}:**", v)
             elif isinstance(r, _go.Figure):
-                st.plotly_chart(r, use_container_width=True)
+                st.plotly_chart(normalize_ai_figure_percent_axes(r), use_container_width=True)
             elif isinstance(r, pd.DataFrame):
+                r_display = format_table_for_display(r)
                 st.dataframe(
-                    r,
+                    r_display,
                     use_container_width=True,
                     hide_index=True,
                     height=dataframe_display_height(len(r)),
@@ -2816,8 +3336,9 @@ with tab_chat:
                 )
             elif isinstance(r, pd.Series):
                 ser_df = r.reset_index()
+                ser_display = format_table_for_display(ser_df)
                 st.dataframe(
-                    ser_df,
+                    ser_display,
                     use_container_width=True,
                     hide_index=True,
                     height=dataframe_display_height(len(ser_df)),
@@ -2848,7 +3369,7 @@ with tab_chat:
                 """,
                 unsafe_allow_html=True,
             )
-        elif kind == "answer":
+        elif kind in ("answer", "confirmation_pending"):
             render_step_body(step, export_key_suffix=export_key_suffix)
         else:
             with st.expander(f"Analysis step - {kind}", expanded=False):
@@ -2889,6 +3410,17 @@ with tab_chat:
                     if _step_has_plotly_figure(intermediate_steps[j][0]):
                         final_visual_result = intermediate_steps.pop(j)
 
+            confirmation_steps = [
+                (intermediate, step_i)
+                for intermediate, step_i in intermediate_steps
+                if intermediate.get("kind") == "confirmation_pending"
+            ]
+            intermediate_steps = [
+                (intermediate, step_i)
+                for intermediate, step_i in intermediate_steps
+                if intermediate.get("kind") != "confirmation_pending"
+            ]
+
             if intermediate_steps:
                 with st.expander(f"Analysis steps ({len(intermediate_steps)})", expanded=False):
                     for j, (intermediate, step_i) in enumerate(intermediate_steps):
@@ -2899,6 +3431,9 @@ with tab_chat:
             if final_answer is not None:
                 render_step(final_answer, export_key_suffix=f"fin_{steps.index(final_answer)}")
 
+            for confirmation_step, confirmation_step_i in confirmation_steps:
+                render_step(confirmation_step, export_key_suffix=f"confirm_{confirmation_step_i}")
+
             if final_visual_result is not None:
                 visual_step, visual_step_i = final_visual_result
                 render_step_body(visual_step, export_key_suffix=f"visual_{visual_step_i}")
@@ -2906,8 +3441,6 @@ with tab_chat:
             if step.get("kind") != "user" and final_answer is None and not intermediate_steps:
                 render_step(step, export_key_suffix=f"orphan_{steps.index(step)}")
                 i += 1
-
-    _schema_display = build_schema_context(df_raw)
 
     if "agent_steps" not in st.session_state:
         st.session_state.agent_steps = []
@@ -3006,8 +3539,35 @@ with tab_chat:
             box-shadow: none !important;
         }
         div[data-testid="stChatInput"] {
-            max-width: 920px;
-            margin: 0.75rem auto 0;
+            max-width: 920px !important;
+            width: min(920px, calc(100% - 2rem)) !important;
+            margin: 0.75rem auto 0 !important;
+            background: transparent !important;
+        }
+        section[data-testid="stChatInput"] {
+            background: transparent !important;
+        }
+        section[data-testid="stChatInput"] > div,
+        div[data-testid="stChatInput"] > div,
+        section[data-testid="stChatInput"] form,
+        div[data-testid="stChatInput"] form {
+            max-width: 920px !important;
+            width: 100% !important;
+            margin-left: auto !important;
+            margin-right: auto !important;
+            background: transparent !important;
+        }
+        section[data-testid="stChatInput"] textarea,
+        div[data-testid="stChatInput"] textarea,
+        section[data-testid="stChatInput"] input,
+        div[data-testid="stChatInput"] input {
+            width: 100% !important;
+            min-width: 0 !important;
+        }
+        section[data-testid="stChatInput"] button,
+        div[data-testid="stChatInput"] button {
+            flex: 0 0 auto !important;
+            margin-left: 0.35rem !important;
         }
         .ai-analyst-footer-note {
             max-width: 760px;
@@ -3036,13 +3596,14 @@ with tab_chat:
     pending_user_input = st.session_state.ai_analyst_pending_user_input
     pending_request = pending_user_input
 
-    with st.container(key="ai_chat_shell"):
+    _ai_chat_shell_kwargs = {"key": "ai_chat_shell"} if CONTAINER_SUPPORTS_KEY else {}
+    with st.container(**_ai_chat_shell_kwargs):
         if not has_chat and not pending_request:
             st.markdown(
                 """
                 <div class="ai-empty-state">
                     <h1>AI Analyst</h1>
-                    <p>Ask about model outputs, agent behavior, sales quality, or any field in the sidebar schema.</p>
+                    <p>Ask about model outputs, agent behavior, sales quality, or any field in the Dataset Schema tab.</p>
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -3059,11 +3620,17 @@ with tab_chat:
         st.session_state.ai_analyst_pending_user_input = None
         st.session_state.ai_analyst_limit_warning = False
         _time_bundle = _ai_analyst_time_bundle(df_raw)
+        filters_summary = build_filters_summary(
+            date_range, sel_center, sel_agent, happy_only,
+            sel_brand_nonbrand, sel_mkt, sel_serp, sel_mov,
+            sel_quartile, sel_rec_type,
+        )
         full_system = (
             AI_ANALYST_SYSTEM_PROMPT
             + "\n\n"
             + _time_bundle["markdown"]
             + f"\n\nCURRENT DATASET SCHEMA:\n{_schema_display}"
+            + f"\n\nACTIVE SIDEBAR FILTERS (informational only; df is not automatically filtered by these):\n{filters_summary}"
         )
         client = _OpenAI()
 
@@ -3077,6 +3644,8 @@ with tab_chat:
         pending_final_strip = False
         final_tool_call_id: str | None = None
         code_error_by_hash: dict[str, int] = {}
+        confirmation_requested = False
+        confirmation_pending_step = None
 
         with st.status("Agent is running...", expanded=False) as run_status:
             while step_num < MAX_STEPS:
@@ -3122,6 +3691,15 @@ with tab_chat:
                         }
                         st.session_state.agent_steps.append(thinking_step)
 
+                    confirmation_tool_call = next(
+                        (
+                            tc for tc in tool_calls
+                            if (getattr(tc.function, "name", "") or "") == "request_confirmation"
+                        ),
+                        None,
+                    )
+                    tool_calls_to_handle = [confirmation_tool_call] if confirmation_tool_call is not None else tool_calls
+
                     st.session_state.agent_messages.append(
                         {
                             "role": "assistant",
@@ -3135,13 +3713,37 @@ with tab_chat:
                                         "arguments": tc.function.arguments,
                                     },
                                 }
-                                for tc in tool_calls
+                                for tc in tool_calls_to_handle
                             ],
                         },
                     )
 
-                    for tool_call in tool_calls:
+                    for tool_call in tool_calls_to_handle:
                         fname = getattr(tool_call.function, "name", "") or ""
+                        try:
+                            args = _json.loads(tool_call.function.arguments)
+                        except Exception:
+                            args = {}
+
+                        if fname == "request_confirmation":
+                            plan = (args.get("plan", "") or "").strip()
+                            if not plan:
+                                plan = "I have enough information to proceed. Please confirm that I should run the planned analysis."
+                            confirmation_pending_step = {
+                                "kind": "confirmation_pending",
+                                "content": plan,
+                            }
+                            st.session_state.agent_steps.append(confirmation_pending_step)
+                            st.session_state.agent_messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": tool_call.id,
+                                    "content": "Confirmation request sent to user. Wait for their reply before proceeding.",
+                                },
+                            )
+                            confirmation_requested = True
+                            break
+
                         if fname != "execute_python":
                             st.session_state.agent_messages.append(
                                 {
@@ -3151,11 +3753,6 @@ with tab_chat:
                                 },
                             )
                             continue
-
-                        try:
-                            args = _json.loads(tool_call.function.arguments)
-                        except Exception:
-                            args = {"code": "", "rationale": "Could not parse tool arguments."}
 
                         code = args.get("code", "") or ""
                         rationale = args.get("rationale", "") or ""
@@ -3260,6 +3857,8 @@ with tab_chat:
                                     "content": tool_content,
                                 },
                             )
+                    if confirmation_requested:
+                        break
                 else:
                     if msg_content.strip():
                         answer_step = {"kind": "answer", "content": msg_content}
@@ -3267,10 +3866,23 @@ with tab_chat:
                     st.session_state.agent_messages.append({"role": "assistant", "content": msg_content})
                     break
 
-            run_status.update(label="Agent finished.", state="complete", expanded=False)
+            run_status.update(
+                label="Awaiting confirmation." if confirmation_requested else "Agent finished.",
+                state="complete",
+                expanded=False,
+            )
 
         if step_num >= MAX_STEPS:
             st.session_state.ai_analyst_limit_warning = True
+        if confirmation_requested:
+            if confirmation_pending_step is not None:
+                render_step(confirmation_pending_step, export_key_suffix=f"live_{len(st.session_state.agent_steps) - 1}")
+        else:
+            st.rerun()
+
+    typed_user_input = st.chat_input("What do you want to know?", key="ai_analyst_input")
+    if typed_user_input:
+        st.session_state.ai_analyst_pending_user_input = typed_user_input
         st.rerun()
 
     if has_chat:
@@ -3282,15 +3894,10 @@ with tab_chat:
             st.session_state.ai_analyst_limit_warning = False
             st.rerun()
 
-    typed_user_input = st.chat_input("What do you want to know?", key="ai_analyst_input")
-    if typed_user_input:
-        st.session_state.ai_analyst_pending_user_input = typed_user_input
-        st.rerun()
-
     st.markdown(
         """
         <div class="ai-analyst-footer-note">
-            Tip: Use field names from the sidebar schema when possible, and describe the analysis you want in detail to reduce misinterpretation.
+            Tip: Use field names from the Dataset Schema tab when possible, and describe the analysis you want in detail to reduce misinterpretation.
         </div>
         """,
         unsafe_allow_html=True,
