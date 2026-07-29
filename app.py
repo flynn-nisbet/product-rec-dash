@@ -79,6 +79,12 @@ df_raw["call_date"] = pd.to_datetime(df_raw["call_date"])
 
 PERIOD_OPTIONS = ["Daily", "Weekly", "Monthly"]
 SALE_TIER_ORDER = ["Diamond", "Gold", "Silver", "Bronze"]
+SALE_TIER_COLORS = {
+    "Diamond": "#38bdf8",
+    "Gold": "#f5b301",
+    "Silver": "#94a3b8",
+    "Bronze": "#b7791f",
+}
 PERIOD_CODE = {"Daily": "D", "Weekly": "W", "Monthly": "M"}
 PERIOD_FMT = {"Daily": "%b %d", "Weekly": "%b %d", "Monthly": "%b %Y"}
 TAB_OPTIONS = [
@@ -365,9 +371,9 @@ def _ai_analyst_time_bundle(raw: pd.DataFrame) -> dict:
     p4_start = wtd_start - timedelta(days=28)
     p4_end = wtd_start - timedelta(days=1)
     data_line = (
-        f"- **Latest call_date in raw df**: {data_max:%Y-%m-%d} ({data_max:%A})"
+        f"- **Latest call date in the loaded extract**: {data_max:%Y-%m-%d} ({data_max:%A})"
         if data_max is not None
-        else "- **Latest call_date in raw df**: (missing column or no rows)"
+        else "- **Latest call date in the loaded extract**: (missing column or no rows)"
     )
     md = "\n".join(
         [
@@ -424,9 +430,9 @@ def build_schema_context(d: pd.DataFrame) -> str:
         ),
         "",
         "═══ DATA SCOPE ═══",
-        f"df / df_raw:           {d.shape[0]:,} rows × {d.shape[1]} columns (completely unfiltered; default AI Analyst dataframe)",
-        f"df_filtered:           {df.shape[0]:,} rows (sidebar + date filters)",
-        f"df_nodatefilter:       {df_nodatefilter.shape[0]:,} rows (sidebar filters, no date window)",
+        f"All calls, no sidebar filters applied:                 {d.shape[0]:,} rows × {d.shape[1]} columns",
+        f"Current sidebar filters and sidebar date range:        {df.shape[0]:,} rows",
+        f"Current sidebar filters across all dates:              {df_nodatefilter.shape[0]:,} rows",
     ]
 
     if "call_date" in d.columns and d["call_date"].notna().any():
@@ -434,7 +440,7 @@ def build_schema_context(d: pd.DataFrame) -> str:
     if "call_date" in df.columns and df["call_date"].notna().any():
         lines.append(f"Filtered date range:   {df['call_date'].min().date()} – {df['call_date'].max().date()}")
 
-    lines.append("\n═══ KEY COLUMN VALUES (raw df) ═══")
+    lines.append("\n═══ KEY COLUMN VALUES (all calls, no sidebar filters) ═══")
     key_cats = [
         "center_location", "top_recommended_plan_type",
         "first_pitch_type", "sale_type", "mover_switcher", "marketing_bucket",
@@ -1830,13 +1836,19 @@ with tab_agent:
                 sub = trend_ts[trend_ts[group_col] == line_val]
                 if sub.empty:
                     continue
+                tier_color = SALE_TIER_COLORS.get(str(line_val))
+                line_style = dict(width=2)
+                marker_style = dict(size=5)
+                if tier_color:
+                    line_style["color"] = tier_color
+                    marker_style["color"] = tier_color
                 fig_agent_trend.add_trace(go.Scatter(
                     x=sub["period_display"],
                     y=sub["value"],
                     name=str(line_val),
                     mode="lines+markers",
-                    line=dict(width=2),
-                    marker=dict(size=5),
+                    line=line_style,
+                    marker=marker_style,
                 ))
             apply_chart_theme(
                 fig_agent_trend,
@@ -2922,8 +2934,9 @@ AI_ANALYST_TOOLS = [
         "function": {
             "name": "execute_python",
             "description": (
-                "Execute Python against `df`. Assign final output to `result`. "
+                "Execute Python in the analysis environment. Assign final output to `result`. "
                 "Never call print(). pandas=pd, numpy=np, plotly=go/px available. "
+                "Preferred call-population variables: all_calls, sidebar_filtered_calls, sidebar_filtered_all_dates. "
                 "For visuals, return a Plotly Figure directly or under `result['figure']`; "
                 "do not save, link, or embed PNG/image files. "
                 "Date helpers for WTD/MTD/P4WA: analysis_as_of, analysis_wtd_start, analysis_mtd_start, "
@@ -3053,7 +3066,7 @@ with tab_chat:
         lines.append(f"Agents: {_join(sel_agent)}")
         lines.append(
             f"Happy Path Only: {happy_only} "
-            f"({'df_filtered and df_nodatefilter are pre-filtered to happy_path == 1' if happy_only else 'all calls included in filtered frames'})"
+            f"({'sidebar-filtered analyses are restricted to happy_path == 1' if happy_only else 'sidebar-filtered analyses include all happy_path values'})"
         )
 
         if sel_brand_nonbrand and len(sel_brand_nonbrand) < 2:
@@ -3075,6 +3088,9 @@ with tab_chat:
         import plotly.express as _px
         _time_ns = _ai_analyst_time_bundle(dataframe)["namespace"]
         local_ns = {
+            "all_calls":                  dataframe.copy(),
+            "sidebar_filtered_all_dates": df_nodatefilter.copy(),
+            "sidebar_filtered_calls":     df.copy(),
             "df":              dataframe.copy(),
             "df_nodatefilter": df_nodatefilter.copy(),
             "df_filtered":     df.copy(),
@@ -3630,7 +3646,7 @@ with tab_chat:
             + "\n\n"
             + _time_bundle["markdown"]
             + f"\n\nCURRENT DATASET SCHEMA:\n{_schema_display}"
-            + f"\n\nACTIVE SIDEBAR FILTERS (informational only; df is not automatically filtered by these):\n{filters_summary}"
+            + f"\n\nACTIVE SIDEBAR FILTERS (informational only; do not apply these unless the user asks for sidebar/current-dashboard filters):\n{filters_summary}"
         )
         client = _OpenAI()
 
@@ -3647,7 +3663,8 @@ with tab_chat:
         confirmation_requested = False
         confirmation_pending_step = None
 
-        with st.status("Agent is running...", expanded=False) as run_status:
+        run_status_placeholder = st.empty()
+        with run_status_placeholder.status("Agent is running...", expanded=False) as run_status:
             while step_num < MAX_STEPS:
                 if pending_final_strip and final_tool_call_id:
                     strip_prior_tool_results_keep_final(
@@ -3875,6 +3892,7 @@ with tab_chat:
         if step_num >= MAX_STEPS:
             st.session_state.ai_analyst_limit_warning = True
         if confirmation_requested:
+            run_status_placeholder.empty()
             if confirmation_pending_step is not None:
                 render_step(confirmation_pending_step, export_key_suffix=f"live_{len(st.session_state.agent_steps) - 1}")
         else:
